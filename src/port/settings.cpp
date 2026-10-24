@@ -39,6 +39,7 @@ UserSettings g_userSettings = {
         .shadowResolutionMultiplier {"game.shadowResolutionMultiplier", 1},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableTextureDumps {"game.enableTextureDumps", false},
+        .characterVariants {"game.characterVariants", ""},
 
         // Audio
 
@@ -105,6 +106,7 @@ void registerSettings() {
     Register(g_userSettings.game.shadowResolutionMultiplier);
     Register(g_userSettings.game.enableTextureReplacements);
     Register(g_userSettings.game.enableTextureDumps);
+    Register(g_userSettings.game.characterVariants);
     Register(g_userSettings.game.enableAchievementToasts);
     Register(g_userSettings.game.enableControllerToasts);
     Register(g_userSettings.game.enableTurboKeybind);

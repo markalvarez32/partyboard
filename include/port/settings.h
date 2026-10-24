@@ -90,6 +90,7 @@ struct UserSettings {
         ConfigVar<int> shadowResolutionMultiplier;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<bool> enableTextureDumps;
+        ConfigVar<std::string> characterVariants;
 
         // Audio
 

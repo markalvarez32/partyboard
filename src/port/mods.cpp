@@ -16,6 +16,7 @@
 #include <port/settings.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdio>
 #include <cstring>
@@ -189,7 +190,16 @@ struct Mod {
     ModInfo info;
     std::shared_ptr<Bundle> bundle;
     std::vector<std::string> files;
+    std::vector<CharacterVariant> characters;
 };
+
+constexpr std::string_view kCharactersPrefix = "characters/";
+constexpr const char* kCharacterPackKinds[] = {"mdl0", "mdl1", "mot"};
+constexpr int kCharacterPackKindCount = 3;
+
+// Data pack entry numbers for each variant's rebuilt packs, by variant key; -1 keeps the base pack.
+std::unordered_map<std::string, std::array<s32, kCharacterPackKindCount>> s_variantEntryNums;
+std::vector<CharacterVariant> s_variants;
 
 // One file served to Aurora's DVD layer in place of (or in addition to) a disc file.
 struct OverlaySource {
@@ -424,6 +434,24 @@ std::optional<Mod> open_mod(const fs::path& path) {
         mod.info.description = manifest.value("description", "");
         mod.files = mod.bundle->file_names();
         std::sort(mod.files.begin(), mod.files.end());
+        for (const auto& entry : manifest.value("characters", nlohmann::json::array())) {
+            CharacterVariant variant;
+            variant.modId = mod.info.id;
+            variant.id = entry.at("id").get<std::string>();
+            variant.name = entry.value("name", variant.id);
+            const auto base = to_lower(entry.at("base").get<std::string>());
+            for (int i = 0; i < kBaseCharacterCount; ++i) {
+                if (base == kBaseCharacterNames[i]) {
+                    variant.base = i;
+                }
+            }
+            if (variant.base < 0 || variant.id.empty() || variant.id.find('/') != std::string::npos) {
+                throw std::runtime_error(fmt::format("character '{}' needs an id and a base (mario, luigi, peach, "
+                                                     "yoshi, wario, donkey, daisy or waluigi)",
+                    variant.id));
+            }
+            mod.characters.push_back(std::move(variant));
+        }
     } catch (const std::exception& e) {
         mod.info.error = e.what();
         if (mod.info.id.empty()) {
@@ -554,6 +582,64 @@ void apply_overlays() {
         });
     }
 
+    // Character variants: rebuilt copies of the base character's packs at new disc paths.
+    struct VariantPack {
+        std::string key;
+        int kind;
+        size_t source;
+    };
+    std::vector<VariantPack> variantPacks;
+    for (auto& mod : s_mods) {
+        for (const auto& variant : mod.characters) {
+            const std::string root = std::string{kCharactersPrefix} + variant.id + "/";
+            for (int kind = 0; kind < kCharacterPackKindCount; ++kind) {
+                const std::string kindName = kCharacterPackKinds[kind];
+                const std::string wholePath = root + kindName + ".bin";
+                const std::string entryPrefix = root + kindName + "/";
+                std::map<uint32_t, std::vector<uint8_t>> replacements;
+                bool hasWhole = false;
+                try {
+                    for (const auto& file : mod.files) {
+                        if (file == wholePath) {
+                            hasWhole = true;
+                        } else if (file.starts_with(entryPrefix)) {
+                            const auto name = std::string_view{file}.substr(entryPrefix.size());
+                            if (const auto index = parse_pack_index(name); index && name.find('/') == std::string_view::npos) {
+                                replacements[*index] = mod.bundle->read_file(file);
+                            } else {
+                                Log.warn("[{}] {} is not named by a file index; skipped", mod.info.id, file);
+                            }
+                        }
+                    }
+                    if (!hasWhole && replacements.empty()) {
+                        continue;
+                    }
+                    const std::string basePath =
+                        fmt::format("/data/{}{}.bin", kBaseCharacterNames[variant.base], kindName);
+                    auto base = hasWhole ? std::optional{mod.bundle->read_file(wholePath)} : read_disc_file(basePath);
+                    if (!base) {
+                        Log.error("[{}] {} was not found on the disc", mod.info.id, basePath);
+                        continue;
+                    }
+                    auto pack = replacements.empty() ? base : rebuild_pack(basePath, *base, replacements);
+                    if (!pack) {
+                        continue;
+                    }
+                    const size_t size = pack->size();
+                    variantPacks.push_back({variant.key(), kind, s_overlaySources.size()});
+                    s_overlaySources.push_back({
+                        .discPath = fmt::format("/pbmods/{}/{}/{}.bin", mod.info.id, variant.id, kindName),
+                        .buffer = std::make_shared<const std::vector<uint8_t>>(std::move(*pack)),
+                        .size = size,
+                    });
+                } catch (const std::exception& e) {
+                    Log.error("[{}] character '{}': {}", mod.info.id, variant.id, e.what());
+                }
+            }
+            s_variants.push_back(variant);
+        }
+    }
+
     if (s_overlaySources.empty()) {
         return;
     }
@@ -573,6 +659,13 @@ void apply_overlays() {
         if (entryNums[i] < 0) {
             Log.warn("Overlay for {} was not accepted", s_overlaySources[i].discPath);
         }
+    }
+    for (const auto& pack : variantPacks) {
+        auto [it, inserted] = s_variantEntryNums.try_emplace(pack.key);
+        if (inserted) {
+            it->second.fill(-1);
+        }
+        it->second[pack.kind] = entryNums[pack.source];
     }
     Log.info("Applied {} overlay file(s)", files.size());
 }
@@ -672,4 +765,94 @@ const std::vector<ModInfo>& loaded_mods() {
     return s_modInfos;
 }
 
+const std::vector<CharacterVariant>& character_variants() {
+    return s_variants;
+}
+
+namespace {
+
+// game.characterVariants holds "<base>=<modId>/<id>" pairs separated by ';'.
+std::map<std::string, std::string> parse_variant_setting() {
+    std::map<std::string, std::string> result;
+    const std::string value = getSettings().game.characterVariants.getValue();
+    size_t start = 0;
+    while (start < value.size()) {
+        size_t end = value.find(';', start);
+        if (end == std::string::npos) {
+            end = value.size();
+        }
+        const auto pair = std::string_view{value}.substr(start, end - start);
+        if (const auto eq = pair.find('='); eq != std::string_view::npos) {
+            result.emplace(to_lower(pair.substr(0, eq)), std::string{pair.substr(eq + 1)});
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+}
+
+std::string selected_variant(int base) {
+    if (base < 0 || base >= kBaseCharacterCount) {
+        return {};
+    }
+    const auto selections = parse_variant_setting();
+    const auto it = selections.find(kBaseCharacterNames[base]);
+    return it == selections.end() ? std::string{} : it->second;
+}
+
+void select_variant(int base, const std::string& key) {
+    if (base < 0 || base >= kBaseCharacterCount) {
+        return;
+    }
+    auto selections = parse_variant_setting();
+    if (key.empty()) {
+        selections.erase(kBaseCharacterNames[base]);
+    } else {
+        selections[kBaseCharacterNames[base]] = key;
+    }
+    std::string value;
+    for (const auto& [name, selected] : selections) {
+        if (!value.empty()) {
+            value += ';';
+        }
+        value += name + "=" + selected;
+    }
+    getSettings().game.characterVariants.setValue(value);
+}
+
+}
+
+extern "C" int partyboard_mods_remap_data_dir(const char* path, int entryNum) {
+    using namespace partyboard::mods;
+    if (path == nullptr) {
+        return entryNum;
+    }
+    std::string_view name{path};
+    if (name.starts_with('/')) {
+        name.remove_prefix(1);
+    }
+    const auto lower = to_lower(name);
+    for (int base = 0; base < kBaseCharacterCount; ++base) {
+        for (int kind = 0; kind < kCharacterPackKindCount; ++kind) {
+            if (lower != fmt::format("data/{}{}.bin", kBaseCharacterNames[base], kCharacterPackKinds[kind])) {
+                continue;
+            }
+            const auto key = selected_variant(base);
+            if (key.empty()) {
+                return entryNum;
+            }
+            const auto it = s_variantEntryNums.find(key);
+            if (it == s_variantEntryNums.end()) {
+                Log.warn("Selected character variant '{}' for {} is not installed", key, kBaseCharacterNames[base]);
+                return entryNum;
+            }
+            if (it->second[kind] >= 0) {
+                Log.info("Using character variant '{}' for {}", key, path);
+                return it->second[kind];
+            }
+            return entryNum;
+        }
+    }
+    return entryNum;
 }

@@ -14,6 +14,11 @@
 
 void **HuDataReadMultiSub(s32 *dataNum, BOOL use_num, s32 num);
 
+#ifdef TARGET_PC
+// port/mods.cpp: swaps in a selected character variant's pack
+int partyboard_mods_remap_data_dir(const char *path, int entryNum);
+#endif
+
 #define DATA_MAX_READSTAT 128
 
 #define DATADIR(name, path) { path, -1 },
@@ -45,6 +50,9 @@ void HuDataInit(void)
             OSReport("data.c: Data File Error(%s)\n", dir_stat->name);
             OSPanic("data.c", 65, "\n");
         }
+#ifdef TARGET_PC
+        dir_stat->entryNum = partyboard_mods_remap_data_dir(dir_stat->name, dir_stat->entryNum);
+#endif
         i++;
         dir_stat++;
     }

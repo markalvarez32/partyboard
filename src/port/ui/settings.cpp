@@ -547,6 +547,67 @@ SettingsWindow::SettingsWindow(bool prelaunch)
             }
         });
 
+        static constexpr const char *kBaseDisplayNames[] = {"Mario", "Luigi", "Peach", "Yoshi", "Wario",
+            "Donkey Kong", "Daisy", "Waluigi"};
+        if (!mods::character_variants().empty()) {
+            leftPane.add_section("Characters");
+        }
+        for (int base = 0; base < mods::kBaseCharacterCount; ++base) {
+            std::vector<mods::CharacterVariant> variants;
+            for (const auto &variant : mods::character_variants()) {
+                if (variant.base == base) {
+                    variants.push_back(variant);
+                }
+            }
+            if (variants.empty()) {
+                continue;
+            }
+            auto current = [base, variants] {
+                const auto key = mods::selected_variant(base);
+                for (size_t i = 0; i < variants.size(); ++i) {
+                    if (variants[i].key() == key) {
+                        return static_cast<int>(i) + 1;
+                    }
+                }
+                return 0;
+            };
+            leftPane.register_control(leftPane
+                                          .add_select_button({
+                                              .key = kBaseDisplayNames[base],
+                                              .getValue =
+                                                  [base, variants, current] {
+                                                      const int i = current();
+                                                      return i == 0 ? Rml::String(kBaseDisplayNames[base])
+                                                                    : Rml::String(variants[i - 1].name);
+                                                  },
+                                              .isModified = [current] { return current() != 0; },
+                                              .submit = false,
+                                          })
+                                          .on_nav_command([base, variants, current](Rml::Event &, NavCommand cmd) {
+                                              const int count = static_cast<int>(variants.size()) + 1;
+                                              int next = current();
+                                              if (cmd == NavCommand::Left) {
+                                                  next = (next + count - 1) % count;
+                                              }
+                                              else if (cmd == NavCommand::Right || cmd == NavCommand::Confirm) {
+                                                  next = (next + 1) % count;
+                                              }
+                                              else {
+                                                  return false;
+                                              }
+                                              mods::select_variant(base, next == 0 ? std::string{} : variants[next - 1].key());
+                                              config::Save();
+                                              return true;
+                                          }),
+                rightPane, [base](Pane &pane) {
+                    pane.clear();
+                    pane.add_text(fmt::format("Choose who plays as {}. A character from a mod keeps {}'s place in "
+                                              "every board and minigame and changes their model and animations. "
+                                              "Takes effect after a restart.",
+                        kBaseDisplayNames[base], kBaseDisplayNames[base]));
+                });
+        }
+
         // leftPane.add_section("Post-Processing");
 
         // leftPane.add_section("Rendering");

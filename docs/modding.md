@@ -103,3 +103,35 @@ HSF models in Blender (4.0 and later).
 
 The plugin's author notes that bones are kept as empties because Blender armatures change the rotation values the
 game's animations rely on, so treat the armature as a painting aid and keep the empties as the source of truth.
+
+## New characters
+
+A mod can add characters who stand in for one of the original eight, their base. The newcomer keeps the base's place
+everywhere (boards, minigames, menus, CPU behavior and voice) and brings its own models and animations, so it works
+in every minigame from day one. Pick who plays as each base in **Settings > Graphics > Characters**, then restart.
+Because a party never has the same character twice, a newcomer takes over the base's slot for that game.
+
+Declare characters in `mod.json`:
+
+```json
+{
+  "id": "com.example.bowserjr",
+  "name": "Bowser Jr.",
+  "characters": [
+    {"id": "bowserjr", "name": "Bowser Jr.", "base": "wario"}
+  ]
+}
+```
+
+`base` is one of `mario`, `luigi`, `peach`, `yoshi`, `wario`, `donkey`, `daisy` or `waluigi`. The character's files
+replace files in copies of the base's three packs (see [Model swaps](#model-swaps)):
+
+```
+characters/bowserjr/mdl0/0.hsf      file 0 of the base's mdl0 pack
+characters/bowserjr/mdl1/0.hsf      files 0 to 2 of the base's mdl1 pack
+characters/bowserjr/mot/0x17.hsf    one animation in the base's mot pack
+characters/bowserjr/mot.bin         or a whole replacement pack
+```
+
+Anything you leave out comes from the base. Pick a base with a similar build: animations are shared, so the new model
+needs the base's skeleton. The character's name, portraits and voice still come from the base for now.
