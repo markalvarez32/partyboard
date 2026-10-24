@@ -87,3 +87,19 @@ python tools/mp4pack.py extract mariomdl0.bin work/mariomdl0
 
 Put the edited or replacement HSF model at `overlay/data/mariomdl0.bin/0.hsf` in your mod. A replacement model must
 keep the original's skeleton (the same bone names and hierarchy) or the character's animations will not play on it.
+
+### Models from Blender
+
+[Blender GCN Mario Party Plugin](https://github.com/KillzXGaming/Blender-GCN-Mario-Party-Plugin) imports and exports
+HSF models in Blender (4.0 and later).
+
+1. Install the plugin from its GitHub page (Edit > Preferences > Add-ons > Install from Disk, pick the zip).
+2. Extract the model you want to replace with `tools/mp4pack.py extract`, then use **File > Import > Import HSF** on it.
+   The bones come in as empties named after the original joints, with an armature and vertex groups on the mesh so
+   you can preview and paint weights.
+3. Model or reshape the mesh in place of the original. Keep its vertex groups named after the original bones, and leave
+   the bone empties' names and hierarchy alone, or the game's animations will not drive it.
+4. **File > Export > Export HSF**, and save it into your mod as `overlay/data/<pack>.bin/<index>.hsf`.
+
+The plugin's author notes that bones are kept as empties because Blender armatures change the rotation values the
+game's animations rely on, so treat the armature as a painting aid and keep the empties as the source of truth.
