@@ -174,8 +174,69 @@ def quantize(img, colors):
     return palette, indices
 
 
+def rgba_to_rgb565(r, g, b):
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def encode_cmpr_block(pixels):
+    """Encode 16 RGBA pixels as one DXT1 block (big-endian, as GX stores it)."""
+    opaque = [p for p in pixels if p[3] >= 128]
+    if not opaque:
+        return struct.pack(">HHI", 0, 0xFFFF, 0xFFFFFFFF)
+    # Endpoints: the two opaque pixels furthest apart.
+    best = (-1, opaque[0], opaque[0])
+    for i, a in enumerate(opaque):
+        for b in opaque[i + 1:]:
+            d = sum((a[c] - b[c]) ** 2 for c in range(3))
+            if d > best[0]:
+                best = (d, a, b)
+    c0, c1 = rgba_to_rgb565(*best[1][:3]), rgba_to_rgb565(*best[2][:3])
+    transparent = len(opaque) < 16
+    if transparent:
+        # Three colors and transparency need c0 <= c1.
+        c0, c1 = min(c0, c1), max(c0, c1)
+    elif c0 < c1:
+        c0, c1 = c1, c0
+    elif c0 == c1:
+        transparent = False
+        c1 = c1 - 1 if c1 > 0 else c1
+        if c0 == c1:
+            c0 = c1 + 1
+    a, b = rgb565_to_rgba(c0), rgb565_to_rgba(c1)
+    if c0 > c1:
+        pal = [a, b, tuple((2 * a[i] + b[i]) // 3 for i in range(3)), tuple((a[i] + 2 * b[i]) // 3 for i in range(3))]
+    else:
+        pal = [a, b, tuple((a[i] + b[i]) // 2 for i in range(3)), None]
+    idx = 0
+    for p, px in enumerate(pixels):
+        if px[3] < 128 and c0 <= c1:
+            v = 3
+        else:
+            v = min((i for i in range(4) if pal[i] is not None),
+                    key=lambda i: sum((px[c] - pal[i][c]) ** 2 for c in range(3)))
+        idx |= v << (30 - 2 * p)
+    return struct.pack(">HHI", c0, c1, idx)
+
+
+def encode_cmpr(data, start, img):
+    w, h = img.size
+    px = img.load()
+    o = start
+    for by in range(0, h, 8):
+        for bx in range(0, w, 8):
+            for sub in range(4):
+                sx, sy = bx + (sub % 2) * 4, by + (sub // 2) * 4
+                pixels = [px[sx + p % 4, sy + p // 4] if sx + p % 4 < w and sy + p // 4 < h else (0, 0, 0, 0)
+                          for p in range(16)]
+                data[o:o + 8] = encode_cmpr_block(pixels)
+                o += 8
+
+
 def encode_into(data, bmp, img):
     w, h, fmt = bmp.w, bmp.h, bmp.fmt
+    if fmt == FMT_CMPR:
+        encode_cmpr(data, bmp.data_ofs, img)
+        return
     if fmt not in (FMT_C8, FMT_C4, FMT_RGB5A3, FMT_RGB5A3_DUPE, FMT_RGBA8):
         raise ValueError(f"replacing {FMT_NAMES[fmt]} bitmaps is not supported")
     bw, bh, bpp = BLOCKS[fmt]
