@@ -136,3 +136,16 @@ characters/bowserjr/mot.bin         or a whole replacement pack
 Anything you leave out comes from the base. The new model needs the base's skeleton, since the animations are the
 base's. For now the select screen icon, name, voice and minigame portraits still belong to the spot's original
 character.
+
+### Recolored characters
+
+`tools/mp4recolor.py` builds a mod of recolored characters from a character's packs, changing only one range of
+hues so details keep their colors. For example, from your own `yoshimdl0.bin` and `yoshimdl1.bin`:
+
+```sh
+python tools/mp4recolor.py character yoshi yoshimdl0.bin yoshimdl1.bin mods/yoshi_colors \
+    --color red:0:1.15:1.1 --color blue:220 --color black:0:0.3:0.08
+```
+
+Each `--color` is `NAME:HUE[:BRIGHTNESS[:SATURATION]]`, with the hue in degrees. `--from LOW:HIGH` picks the hues to
+change (Yoshi's green, 70 to 170, by default). The output contains the game's textures, so keep it to yourself.
