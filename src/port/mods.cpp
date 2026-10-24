@@ -806,6 +806,10 @@ void select_variant(int base, const std::string& key) {
         return;
     }
     auto selections = parse_variant_setting();
+    // A character can only fill one spot at a time.
+    for (auto it = selections.begin(); it != selections.end();) {
+        it = !key.empty() && it->second == key ? selections.erase(it) : std::next(it);
+    }
     if (key.empty()) {
         selections.erase(kBaseCharacterNames[base]);
     } else {

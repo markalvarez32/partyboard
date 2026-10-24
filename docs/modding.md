@@ -106,10 +106,10 @@ game's animations rely on, so treat the armature as a painting aid and keep the 
 
 ## New characters
 
-A mod can add characters who stand in for one of the original eight, their base. The newcomer keeps the base's place
-everywhere (boards, minigames, menus, CPU behavior and voice) and brings its own models and animations, so it works
-in every minigame from day one. Pick who plays as each base in **Settings > Graphics > Characters**, then restart.
-Because a party never has the same character twice, a newcomer takes over the base's slot for that game.
+A mod can add characters built on one of the original eight, their base, whose skeleton and animations they reuse.
+In **Settings > Graphics > Characters**, put a mod character in any of the eight spots on the select screen, then
+restart. Picking that spot then gives you the mod character, in every board and minigame. Use a spot nobody in your
+group plays, so you lose no one: for example put Bowser Jr. in Daisy's spot and he can play alongside Wario.
 
 Declare characters in `mod.json`:
 
@@ -133,5 +133,6 @@ characters/bowserjr/mot/0x17.hsf    one animation in the base's mot pack
 characters/bowserjr/mot.bin         or a whole replacement pack
 ```
 
-Anything you leave out comes from the base. Pick a base with a similar build: animations are shared, so the new model
-needs the base's skeleton. The character's name, portraits and voice still come from the base for now.
+Anything you leave out comes from the base. The new model needs the base's skeleton, since the animations are the
+base's. For now the select screen icon, name, voice and minigame portraits still belong to the spot's original
+character.

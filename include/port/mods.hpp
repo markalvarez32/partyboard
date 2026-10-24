@@ -21,9 +21,8 @@
 //
 // Replacement pack files are stored uncompressed. A folder or file ending in ".disabled" is skipped.
 //
-// Character variants: a mod can add characters that stand in for one of the 8 originals (their "base").
-// The base's game logic, minigame data, voice and menus are kept; only its models and animations change.
-// Each is declared in mod.json and built from the base character's packs plus replaced files:
+// Mod characters: a mod can add characters built on one of the 8 originals (their "base"), whose
+// skeleton and animations they reuse. Each is built from the base character's packs plus replaced files:
 //
 //   "characters": [{"id": "bowserjr", "name": "Bowser Jr.", "base": "wario"}]
 //
@@ -31,8 +30,9 @@
 //   characters/bowserjr/mdl1/1.hsf     replaces file 1 of <base>mdl1.bin
 //   characters/bowserjr/mot.bin        a whole replacement for <base>mot.bin (optional)
 //
-// The player picks which variant plays as each base in Settings. Since a party never has the same
-// character twice, a variant takes over its base's slot for the whole game. Takes effect after a restart.
+// In Settings the player puts a mod character in any of the 8 spots on the select screen, typically one
+// nobody plays (so Wario and a Wario-based Bowser Jr. can share a party). The character keeps that spot's
+// game logic, minigame data and voice, with its own models and animations. Takes effect after a restart.
 namespace partyboard::mods {
 
 inline constexpr const char* kBaseCharacterNames[] = {"mario", "luigi", "peach", "yoshi", "wario", "donkey",

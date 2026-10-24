@@ -553,15 +553,8 @@ SettingsWindow::SettingsWindow(bool prelaunch)
             leftPane.add_section("Characters");
         }
         for (int base = 0; base < mods::kBaseCharacterCount; ++base) {
-            std::vector<mods::CharacterVariant> variants;
-            for (const auto &variant : mods::character_variants()) {
-                if (variant.base == base) {
-                    variants.push_back(variant);
-                }
-            }
-            if (variants.empty()) {
-                continue;
-            }
+            // Any mod character can take any spot; it brings its own models and animations.
+            const std::vector<mods::CharacterVariant> variants = mods::character_variants();
             auto current = [base, variants] {
                 const auto key = mods::selected_variant(base);
                 for (size_t i = 0; i < variants.size(); ++i) {
@@ -601,9 +594,10 @@ SettingsWindow::SettingsWindow(bool prelaunch)
                                           }),
                 rightPane, [base](Pane &pane) {
                     pane.clear();
-                    pane.add_text(fmt::format("Choose who plays as {}. A character from a mod keeps {}'s place in "
-                                              "every board and minigame and changes their model and animations. "
-                                              "Takes effect after a restart.",
+                    pane.add_text(fmt::format("Choose who you get when you pick {} on the character select screen. "
+                                              "A character from a mod takes {}'s spot in every board and minigame "
+                                              "with their own model and animations, so choose a spot nobody else "
+                                              "plays. Takes effect after a restart.",
                         kBaseDisplayNames[base], kBaseDisplayNames[base]));
                 });
         }
