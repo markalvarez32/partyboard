@@ -37,6 +37,8 @@ UserSettings g_userSettings = {
         // Graphics
         .internalResolutionScale {"game.internalResolutionScale", 0},
         .shadowResolutionMultiplier {"game.shadowResolutionMultiplier", 1},
+        .enableTextureReplacements {"game.enableTextureReplacements", true},
+        .enableTextureDumps {"game.enableTextureDumps", false},
 
         // Audio
 
@@ -101,6 +103,8 @@ void registerSettings() {
     Register(g_userSettings.game.pauseOnFocusLost);
     Register(g_userSettings.game.internalResolutionScale);
     Register(g_userSettings.game.shadowResolutionMultiplier);
+    Register(g_userSettings.game.enableTextureReplacements);
+    Register(g_userSettings.game.enableTextureDumps);
     Register(g_userSettings.game.enableAchievementToasts);
     Register(g_userSettings.game.enableControllerToasts);
     Register(g_userSettings.game.enableTurboKeybind);

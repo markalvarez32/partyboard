@@ -23,6 +23,8 @@
 #include <port/main.h>
 #include <port/settings.h>
 #include <port/port_version.h>
+#include <port/mods.hpp>
+#include <port/texture_replacements.hpp>
 
 #include <aurora/dvd.h>
 #include <aurora/lib/logging.hpp>
@@ -408,7 +410,7 @@ extern "C" int port_main(int argc, char* argv[]) {
         config.allowJoystickBackgroundEvents = partyboard::getSettings().game.allowBackgroundInput;
         config.pauseOnFocusLost = partyboard::getSettings().game.pauseOnFocusLost;
         // config.imGuiInitCallback = &aurora_imgui_init_callback;
-        config.allowTextureDumps = false;
+        config.allowTextureDumps = partyboard::getSettings().game.enableTextureDumps;
         auroraInfo = aurora_initialize(argc, argv, &config);
     }
 
@@ -426,6 +428,7 @@ extern "C" int port_main(int argc, char* argv[]) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
     }
     VISetFrameBufferScale(partyboard::getSettings().game.internalResolutionScale.getValue());
+    partyboard::texture_replacements::reload();
 
     // TODO PC
     // partyboard::audio::SetMasterVolume(partyboard::getSettings().audio.masterVolume / 100.0f);
@@ -512,6 +515,7 @@ extern "C" int port_main(int argc, char* argv[]) {
     if (!aurora_dvd_open(dvd_path.c_str())) {
         PartyBoardMainLog.error("Failed to open DVD image: {}", dvd_path);
     }
+    partyboard::mods::initialize();
 
     PartyBoard_IsGameLaunched = true;
 
@@ -547,6 +551,8 @@ extern "C" int port_main(int argc, char* argv[]) {
     partyboard::discord::shutdown();
 #endif
     partyboard::ui::shutdown();
+    partyboard::mods::shutdown();
+    partyboard::texture_replacements::shutdown();
     aurora_shutdown();
 
     return 0;

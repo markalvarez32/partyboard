@@ -6,6 +6,8 @@
 #include "bool_button.hpp"
 #include "controller_config.hpp"
 #include "port/config.hpp"
+#include "port/mods.hpp"
+#include "port/texture_replacements.hpp"
 #include "../imgui/ImGuiEngine.hpp"
 #include "../file_select.hpp"
 #include "graphics_tuner.hpp"
@@ -16,6 +18,7 @@
 #include "ui.hpp"
 
 #include <algorithm>
+#include <fmt/format.h>
 #include <aurora/aurora.h>
 #include <game/disp.h>
 #include <gx/GXAurora.h>
@@ -498,6 +501,51 @@ SettingsWindow::SettingsWindow(bool prelaunch)
                 .defaultValue = 1,
             },
             mPrelaunch);
+
+        leftPane.add_section("Texture Packs");
+        config_bool_select(leftPane, rightPane, getSettings().game.enableTextureReplacements,
+            {
+                .key = "Texture Packs",
+                .helpText = "Load replacement textures from the texture_replacements folder in the data folder. "
+                            "Files use Dolphin-style names (tex1_<width>x<height>_<hash>_<format>.png or .dds).",
+                .onChange = [](bool) { texture_replacements::reload(); },
+            });
+        leftPane.register_control(leftPane.add_button("Reload Texture Packs").on_pressed([] {
+            texture_replacements::reload();
+        }),
+            rightPane, [](Pane &pane) {
+                pane.clear();
+                pane.add_text(fmt::format("Rescan the texture_replacements folder without restarting. "
+                                          "{} replacement(s) currently loaded.",
+                    texture_replacements::count()));
+            });
+        config_bool_select(leftPane, rightPane, getSettings().game.enableTextureDumps,
+            {
+                .key = "Dump Textures",
+                .helpText = "Save every texture the game draws to the texture_dumps folder in the data folder, "
+                            "named so it can be edited and dropped into texture_replacements. Takes effect after a "
+                            "restart.",
+            });
+
+        leftPane.add_section("Mods");
+        leftPane.register_control(leftPane.add_button("Installed Mods"), rightPane, [](Pane &pane) {
+            pane.clear();
+            const auto &mods = mods::loaded_mods();
+            if (mods.empty()) {
+                pane.add_text("No mods installed. Put mod folders or .pbmod files in the mods folder inside the data "
+                              "folder, then restart.");
+                return;
+            }
+            for (const auto &mod : mods) {
+                if (!mod.error.empty()) {
+                    pane.add_text(fmt::format("{}: failed to load ({})", mod.id, mod.error));
+                    continue;
+                }
+                pane.add_text(fmt::format("{} {} by {}: {} file(s), {} pack file(s), {} texture(s)", mod.name,
+                    mod.version, mod.author.empty() ? "unknown" : mod.author, mod.overlayCount, mod.packEntryCount,
+                    mod.textureCount));
+            }
+        });
 
         // leftPane.add_section("Post-Processing");
 

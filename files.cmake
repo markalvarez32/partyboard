@@ -89,10 +89,12 @@ set(PORT_FILES
         src/port/imgui.cpp
         src/port/io.cpp
         src/port/iso_validate.cpp
+        src/port/mods.cpp
         src/port/OS.c
         src/port/portmain.cpp
         src/port/settings.cpp
         src/port/stubs.c
+        src/port/texture_replacements.cpp
         src/port/version.cpp
 
         src/port/ui/achievements.cpp
