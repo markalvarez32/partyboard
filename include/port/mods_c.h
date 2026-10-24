@@ -16,6 +16,8 @@ extern "C" {
 int partyboard_mods_character_count(void);
 // Base character (0-7) of mod character k, whose skeleton and animations it uses.
 int partyboard_mods_character_base(int k);
+// 1 when mod character k is an alternate look of its base, picked from the base's box.
+int partyboard_mods_character_costume(int k);
 const char *partyboard_mods_character_name(int k);
 // Mod character k's copy of file `index` of a pack ("data/ment.bin"), named after its base's entry,
 // or NULL. The data stays valid; copy it before changing it.
@@ -34,7 +36,7 @@ int partyboard_mods_remap_data_dir(const char *path, int entryNum);
 // character plays in that spot (its own copy or its base's), with its length and compression; or NULL.
 const void *partyboard_mods_file_override(const char *packPath, int index, u32 *rawLen, u32 *decodeType);
 // Called by messdata.c: the character name message with a placed mod character's name.
-const char *partyboard_mods_character_message(const char *mes, const char *name_mes, int spot);
+const char *partyboard_mods_character_message(const char *mes, const char *name_mes, const char *base_name_mes, int spot);
 
 #ifdef __cplusplus
 }

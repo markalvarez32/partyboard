@@ -108,9 +108,11 @@ game's animations rely on, so treat the armature as a painting aid and keep the 
 
 A mod can add characters built on one of the original eight, their base, whose skeleton and animations they reuse.
 In Party Mode, mod characters get boxes of their own: press down from the bottom row of the character select
-screen to page to them (an arrow shows when there are more). Once everyone has chosen, each mod character borrows a
-spot that nobody picked, its base's spot if it is free, and plays there in every board and minigame. So Bowser Jr.
-can play alongside Wario, and Red Yoshi alongside Yoshi.
+screen to page to them (an arrow shows when there are more). A character marked `"costume": true` is instead an
+alternate look of its base, like a color in Mario Kart: choosing the base's box opens a row of its looks. Only
+Yoshi's box can be chosen by two players, as different colors. Once everyone has chosen, each mod character borrows
+a spot that nobody picked, its base's spot if it is free, and plays there in every board and minigame. So Bowser Jr.
+can play alongside Wario, and Red Yoshi alongside Yoshi. A costume keeps its base's name in the game's text.
 
 Other modes use **Settings > Graphics > Characters**, which puts a mod character in one of the eight spots after a
 restart.
@@ -122,7 +124,8 @@ Declare characters in `mod.json`:
   "id": "com.example.bowserjr",
   "name": "Bowser Jr.",
   "characters": [
-    {"id": "bowserjr", "name": "Bowser Jr.", "base": "wario"}
+    {"id": "bowserjr", "name": "Bowser Jr.", "base": "wario"},
+    {"id": "shinemario", "name": "Sunshine Mario", "base": "mario", "costume": true}
   ]
 }
 ```

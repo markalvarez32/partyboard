@@ -204,23 +204,44 @@ s32 lbl_1_bss_8[3];
 #include "game/memory.h"
 #include "port/mods_c.h"
 
-// Mod characters get boxes of their own on extra pages of the party select screen. A cursor holds a slot:
-// 0-7 are the original characters and 8+k is mod character k. Pressing down from the bottom row (or up
-// from the top row) moves to the next (or previous) page. When the players are chosen, each mod character
-// borrows a free character spot (see partyboard_mods_place_characters) and its slot becomes that spot.
+// Mod characters with a look of their own (like Birdo) get boxes on extra pages of the party select screen:
+// pressing down from the bottom row (or up from the top row) moves to the next (or previous) page. A cursor
+// holds a box: 0-7 are the original characters and 8+ the new ones. Costume mod characters (like Yoshi's
+// colors or another model of Mario) instead appear in a row that opens when their base's box is chosen,
+// like the colors in Mario Kart. When the players are chosen, each mod character borrows a free character
+// spot (see partyboard_mods_place_characters) and the box becomes that spot.
 #define MENT_PAGE_SIZE 8
 #define MENT_SLOT_MAX 64
+#define MENT_LOOK_MAX 12
 #define MENT_ARROW_DOWN 0x35
 #define MENT_ARROW_UP 0x36
+#define MENT_PICK_ICON 0x37
+#define MENT_PICK_BACK (MENT_PICK_ICON + MENT_LOOK_MAX)
+#define MENT_GROUP_SIZE (MENT_PICK_BACK + 1)
+// Two players may only share Yoshi's box, as different colors.
+#define MENT_SHARED_BOX 3
 #define MENT_CELL(slot) ((slot) % MENT_PAGE_SIZE)
 #define MENT_CHAR(slot) MentSlotChar(slot)
 #define MENT_ROW_MAX ((MentSlotNum() - 1) / 4)
 #define MENT_BANK_SET(group, slot, bank) (MentPageFocus(slot), HuSprBankSet((group), MENT_CELL(slot), (bank)))
+#define MENT_PICKER_IDLE (MentPicker < 0)
+#define MENT_BOX_FREE(slot) ((slot) == MENT_SHARED_BOX && MentLookNum[MENT_SHARED_BOX] > 0)
+
+extern s32 lbl_1_data_57C[MENT_SLOT_MAX / 4][4];
 
 static s32 MentPage;
 static s32 MentSlotCount = 8;
+static s32 MentBoxMod[MENT_SLOT_MAX];
 static ANIMDATA *MentIcons[MENT_SLOT_MAX];
-static s32 MentWanted[4];
+// The looks of each original character: index 0 is its own, i is mod character MentLooks[base][i - 1].
+static s32 MentLooks[8][MENT_LOOK_MAX - 1];
+static s32 MentLookNum[8];
+static ANIMDATA *MentLookIcons[8][MENT_LOOK_MAX];
+// The look each player chose: -1 for the character's own, otherwise the mod character.
+static s32 MentLook[4] = { -1, -1, -1, -1 };
+static s32 MentPicker = -1;
+static s32 MentPickerIndex;
+static s32 MentBoxes[4];
 static s32 MentFaceGroup = -1;
 static s32 MentTeamGroup = -1;
 
@@ -236,7 +257,7 @@ static s32 MentSlotChar(s32 slot)
     if (slot < 8) {
         return slot;
     }
-    base = partyboard_mods_character_base(slot - 8);
+    base = partyboard_mods_character_base(MentBoxMod[slot]);
     return base >= 0 ? base : 0;
 }
 
@@ -254,10 +275,8 @@ static ANIMDATA *MentAnimReadOwn(s32 k, s32 fileNum, s32 baseNum)
     return HuSprAnimRead(data);
 }
 
-static ANIMDATA *MentArrowMake(BOOL up)
+static ANIMDATA *MentSolidMake(s32 w, s32 h, BOOL up, BOOL arrow, u16 fill)
 {
-    const s32 w = 32;
-    const s32 h = 16;
     ANIMDATA *anim = HuSprAnimMake(w, h, ANIM_BMP_RGB5A3);
     u8 *pix = HuMemDirectMalloc(HEAP_DATA, w * h * 2);
     s32 x;
@@ -268,19 +287,22 @@ static ANIMDATA *MentArrowMake(BOOL up)
             s32 row = up ? (h - 1 - y) : y;
             float half = 15.5f - row;
             float dx = x + 0.5f - 16.0f;
-            u16 color = 0;
+            u16 color = fill;
             s32 offset;
 
-            if (dx < 0) {
-                dx = -dx;
-            }
-            if (dx < half) {
-                // Yellow with a dark brown edge, opaque.
-                if (dx < half - 2.5f && row < 13) {
-                    color = 0x8000 | (31 << 10) | (27 << 5) | 0;
+            if (arrow) {
+                color = 0;
+                if (dx < 0) {
+                    dx = -dx;
                 }
-                else {
-                    color = 0x8000 | (8 << 10) | (4 << 5) | 0;
+                if (dx < half) {
+                    // Yellow with a dark brown edge, opaque.
+                    if (dx < half - 2.5f && row < 13) {
+                        color = 0x8000 | (31 << 10) | (27 << 5) | 0;
+                    }
+                    else {
+                        color = 0x8000 | (8 << 10) | (4 << 5) | 0;
+                    }
                 }
             }
             offset = (((y / 4) * (w / 4) + (x / 4)) * 16 + (y % 4) * 4 + (x % 4)) * 2;
@@ -363,26 +385,43 @@ static void MentPageShow(s32 page)
 
 static void MentPageFocus(s32 slot)
 {
-    if (slot / MENT_PAGE_SIZE != MentPage) {
+    if (MentPicker < 0 && slot / MENT_PAGE_SIZE != MentPage) {
         MentPageShow(slot / MENT_PAGE_SIZE);
     }
 }
 
-// Called once the select group exists: loads every slot's picture and the page arrows.
+// Called once the select group exists: loads every box's and look's picture, the page arrows and the
+// look row.
 static void MentIconsCreate(s32 group)
 {
     s32 count = partyboard_mods_character_count();
     s32 slot;
     s32 base;
     s32 sprite;
+    s32 k;
+    s32 i;
 
     MentFaceGroup = -1;
     MentTeamGroup = -1;
+    MentPicker = -1;
     MentSlotCount = 8;
+    for (base = 0; base < 8; base++) {
+        MentLookNum[base] = 0;
+    }
     if (lbl_1_bss_A8[0] == 0) {
-        MentSlotCount += count;
-        if (MentSlotCount > MENT_SLOT_MAX) {
-            MentSlotCount = MENT_SLOT_MAX;
+        for (k = 0; k < count; k++) {
+            base = partyboard_mods_character_base(k);
+            if (base < 0) {
+                continue;
+            }
+            if (partyboard_mods_character_costume(k)) {
+                if (MentLookNum[base] < MENT_LOOK_MAX - 1) {
+                    MentLooks[base][MentLookNum[base]++] = k;
+                }
+            }
+            else if (MentSlotCount < MENT_SLOT_MAX) {
+                MentBoxMod[MentSlotCount++] = k;
+            }
         }
     }
     for (slot = 0; slot < MentSlotNum(); slot++) {
@@ -391,18 +430,183 @@ static void MentIconsCreate(s32 group)
         }
         else {
             base = MentSlotChar(slot);
-            MentIcons[slot] = MentAnimReadOwn(slot - 8, base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
+            MentIcons[slot] = MentAnimReadOwn(MentBoxMod[slot], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
         }
         // Held for the whole screen, since the boxes swap between them.
         HuSprAnimLock(MentIcons[slot]);
     }
-    sprite = HuSprCreate(MentArrowMake(FALSE), 0x14, 0);
+    for (base = 0; base < 8; base++) {
+        if (MentLookNum[base] == 0) {
+            continue;
+        }
+        MentLookIcons[base][0] = MentIcons[base];
+        for (i = 0; i < MentLookNum[base]; i++) {
+            MentLookIcons[base][i + 1]
+                = MentAnimReadOwn(MentLooks[base][i], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
+            HuSprAnimLock(MentLookIcons[base][i + 1]);
+        }
+    }
+    sprite = HuSprCreate(MentSolidMake(32, 16, FALSE, TRUE, 0), 0x14, 0);
     HuSprGrpMemberSet(group, MENT_ARROW_DOWN, sprite);
     HuSprPosSet(group, MENT_ARROW_DOWN, 288.0f, 238.0f);
-    sprite = HuSprCreate(MentArrowMake(TRUE), 0x14, 0);
+    sprite = HuSprCreate(MentSolidMake(32, 16, TRUE, TRUE, 0), 0x14, 0);
     HuSprGrpMemberSet(group, MENT_ARROW_UP, sprite);
     HuSprPosSet(group, MENT_ARROW_UP, 288.0f, 42.0f);
+    for (i = 0; i < MENT_LOOK_MAX; i++) {
+        sprite = HuSprCreate(MentIcons[0], 0x1E0, 0);
+        HuSprGrpMemberSet(group, MENT_PICK_ICON + i, sprite);
+        HuSprAttrSet(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+    }
+    // A dark, see-through strip behind the look row.
+    sprite = HuSprCreate(MentSolidMake(8, 8, FALSE, FALSE, (3 << 12) | (1 << 8) | (1 << 4) | 2), 0x300, 0);
+    HuSprGrpMemberSet(group, MENT_PICK_BACK, sprite);
+    HuSprAttrSet(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
     MentPage = 0;
+}
+
+static void MentLooksReset(void)
+{
+    s32 i;
+
+    for (i = 0; i < 4; i++) {
+        MentLook[i] = -1;
+    }
+}
+
+// Whether another chosen player already has this look of the box.
+static BOOL MentLookTaken(s32 player, s32 box, s32 index)
+{
+    s32 look = index == 0 ? -1 : MentLooks[box][index - 1];
+    s32 i;
+
+    for (i = 0; i < 4; i++) {
+        if (i != player && lbl_1_bss_3114[i].unk_70[0] == 1 && lbl_1_bss_3114[i].unk_68 == box && MentLook[i] == look) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void MentPickerPlace(MentDllUnkBss3114Struct *player, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 box = player->unk_68;
+    s32 num = MentLookNum[box] + 1;
+    float y = (MENT_CELL(box) / 4 == 0) ? 190.0f : 90.0f;
+    float x = 288.0f + (MentPickerIndex - (num - 1) / 2.0f) * 46.0f;
+
+    HuSprPosSet(group, player->unk_58 + cursor, x, y);
+    HuSprPosSet(group, player->unk_58 + cursor + 4, x, y);
+}
+
+static void MentPickerClose(MentDllUnkBss3114Struct *player, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 i;
+
+    for (i = 0; i <= MentLookNum[player->unk_68]; i++) {
+        HuSprAttrSet(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+    }
+    HuSprAttrSet(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
+    HuSprScaleSet(group, player->unk_58 + cursor, 1.0f, 1.0f);
+    HuSprScaleSet(group, player->unk_58 + cursor + 4, 1.0f, 1.0f);
+    HuSprPosSet(group, player->unk_58 + cursor, lbl_1_data_57C[player->unk_68 % 4][0], lbl_1_data_57C[player->unk_68 / 4][1]);
+    HuSprPosSet(group, player->unk_58 + cursor + 4, lbl_1_data_57C[player->unk_68 % 4][0], lbl_1_data_57C[player->unk_68 / 4][1]);
+    MentPicker = -1;
+}
+
+// Runs before a cursor's own handling each frame. Choosing a box with looks opens the look row instead of
+// choosing it; while the row is open it takes the pad, and choosing a look lets the game choose the box this
+// frame. Returns TRUE when the game's handling should be skipped. cursor is the first member of the cursor's
+// sprites (0x10 for players, 0x18 for COMs).
+static BOOL MentPickerUpdate(MentDllUnkBss3114Struct *player, s32 pad, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 box = player->unk_68;
+    s32 num;
+    s32 i;
+    s32 dir = 0;
+    float y;
+
+    if (MentPicker != player->unk_58) {
+        if (player->unk_70[0] != 0 || !(HuPadBtnDown[pad] & PAD_BUTTON_A)) {
+            return FALSE;
+        }
+        if (box >= 8 || MentLookNum[box] == 0) {
+            MentLook[player->unk_58] = -1;
+            return FALSE;
+        }
+        if (MentPicker >= 0) {
+            return TRUE;
+        }
+        num = MentLookNum[box] + 1;
+        for (MentPickerIndex = 0; MentPickerIndex < num && MentLookTaken(player->unk_58, box, MentPickerIndex); MentPickerIndex++) { }
+        if (MentPickerIndex == num) {
+            HuAudFXPlay(3);
+            return TRUE;
+        }
+        MentPicker = player->unk_58;
+        y = (MENT_CELL(box) / 4 == 0) ? 190.0f : 90.0f;
+        HuSprPosSet(group, MENT_PICK_BACK, 288.0f, y);
+        HuSprScaleSet(group, MENT_PICK_BACK, (num * 46.0f + 16.0f) / 8.0f, 56.0f / 8.0f);
+        HuSprAttrReset(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
+        for (i = 0; i < num; i++) {
+            MentAnimSwap(group, MENT_PICK_ICON + i, MentLookIcons[box][i]);
+            HuSprBankSet(group, MENT_PICK_ICON + i, 0);
+            HuSprPosSet(group, MENT_PICK_ICON + i, 288.0f + (i - (num - 1) / 2.0f) * 46.0f, y);
+            HuSprScaleSet(group, MENT_PICK_ICON + i, 0.6f, 0.6f);
+            HuSprTPLvlSet(group, MENT_PICK_ICON + i, MentLookTaken(player->unk_58, box, i) ? 0.35f : 1.0f);
+            HuSprAttrReset(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+        }
+        HuSprScaleSet(group, player->unk_58 + cursor, 0.6f, 0.6f);
+        HuSprScaleSet(group, player->unk_58 + cursor + 4, 0.6f, 0.6f);
+        MentPickerPlace(player, cursor);
+        HuAudFXPlay(2);
+        HuPadBtnDown[pad] &= ~PAD_BUTTON_A;
+        return TRUE;
+    }
+    num = MentLookNum[box] + 1;
+    if (HuPadBtnDown[pad] & PAD_BUTTON_B) {
+        HuPadBtnDown[pad] &= ~PAD_BUTTON_B;
+        MentPickerClose(player, cursor);
+        HuAudFXPlay(3);
+        return TRUE;
+    }
+    if (HuPadBtnDown[pad] & PAD_BUTTON_A) {
+        if (MentLookTaken(player->unk_58, box, MentPickerIndex)) {
+            HuAudFXPlay(3);
+            return TRUE;
+        }
+        MentLook[player->unk_58] = MentPickerIndex == 0 ? -1 : MentLooks[box][MentPickerIndex - 1];
+        MentPickerClose(player, cursor);
+        return FALSE;
+    }
+    if (HuPadStkX[pad] >= 5 || (HuPadBtn[pad] & PAD_BUTTON_RIGHT)) {
+        dir = 1;
+    }
+    else if (HuPadStkX[pad] <= -5 || (HuPadBtn[pad] & PAD_BUTTON_LEFT)) {
+        dir = -1;
+    }
+    if (dir != 0) {
+        MentPickerIndex = (MentPickerIndex + dir + num) % num;
+        MentPickerPlace(player, cursor);
+        HuAudFXPlay(0);
+        for (i = 0; i < 8; i++) {
+            fn_1_4D8();
+        }
+    }
+    return TRUE;
+}
+
+// The character each player plays: a box's own character, or the mod character of its look or box.
+static s32 MentWantedFor(s32 player)
+{
+    s32 box = lbl_1_bss_3114[player].unk_68;
+
+    if (box >= 8) {
+        return 8 + MentBoxMod[box];
+    }
+    return MentLook[player] >= 0 ? 8 + MentLook[player] : box;
 }
 
 // The small faces on the later party screens are read per spot, so they are read again whenever the
@@ -431,16 +635,18 @@ static void MentFacesRefresh(void)
 
 static void MentPlace(void)
 {
+    s32 wanted[4];
     s32 spots[4];
     s32 i;
 
-    if (MentSlotNum() <= 8) {
+    if (partyboard_mods_character_count() == 0) {
         return;
     }
     for (i = 0; i < 4; i++) {
-        MentWanted[i] = lbl_1_bss_3114[i].unk_68;
+        MentBoxes[i] = lbl_1_bss_3114[i].unk_68;
+        wanted[i] = MentWantedFor(i);
     }
-    partyboard_mods_place_characters(MentWanted, spots, 4);
+    partyboard_mods_place_characters(wanted, spots, 4);
     for (i = 0; i < 4; i++) {
         lbl_1_bss_3114[i].unk_68 = spots[i];
     }
@@ -451,11 +657,11 @@ static void MentUnplace(void)
 {
     s32 i;
 
-    if (MentSlotNum() <= 8) {
+    if (partyboard_mods_character_count() == 0) {
         return;
     }
     for (i = 0; i < 4; i++) {
-        lbl_1_bss_3114[i].unk_68 = MentWanted[i];
+        lbl_1_bss_3114[i].unk_68 = MentBoxes[i];
     }
     partyboard_mods_place_characters(NULL, NULL, 0);
     MentFacesRefresh();
@@ -466,6 +672,8 @@ static void MentUnplace(void)
 #define MENT_CHAR(slot) (slot)
 #define MENT_ROW_MAX 1
 #define MENT_BANK_SET(group, slot, bank) HuSprBankSet((group), (slot), (bank))
+#define MENT_BOX_FREE(slot) 0
+#define MENT_PICKER_IDLE 1
 #endif
 
 void fn_1_658C(Process *arg0)
@@ -1293,7 +1501,7 @@ s32 fn_1_8FB8(void)
                 var_r26 = 1;
             }
         }
-        if ((lbl_1_bss_3114[0].unk_70[0] == 0) && (HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B)) {
+        if ((lbl_1_bss_3114[0].unk_70[0] == 0) && (HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && MENT_PICKER_IDLE) {
             HuAudFXPlay(3);
             var_r30 = 0;
             break;
@@ -1391,7 +1599,7 @@ s32 fn_1_92CC(void)
                 var_r24 = lbl_1_bss_3114[var_r30].unk_68;
                 fn_1_1968(var_r27, MENT_CHAR(lbl_1_bss_3114[var_r30].unk_68) + 0x1B0008, -1, -0x3E7);
             }
-            if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && (lbl_1_bss_3114[var_r30].unk_70[0] == 0)) {
+            if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && (lbl_1_bss_3114[var_r30].unk_70[0] == 0) && MENT_PICKER_IDLE) {
                 HuAudFXPlay(3);
                 if (var_r26 == -1) {
                     var_r29 = 0;
@@ -4164,7 +4372,7 @@ void fn_1_151B8(MentDllUnkBss35BCStruct *arg0, s32 arg1, s32 arg2, s32 arg3)
 #ifdef TARGET_PC
     // The boxes show the original characters until the players are chosen.
     partyboard_mods_place_characters(NULL, NULL, 0);
-    var_r30 = HuSprGrpCreate(0x37);
+    var_r30 = HuSprGrpCreate(MENT_GROUP_SIZE);
 #else
     var_r30 = HuSprGrpCreate(0x35);
 #endif
@@ -4278,6 +4486,7 @@ void fn_1_15950(void)
         lbl_1_bss_3114[var_r31].unk_70[0] = 0;
     }
 #ifdef TARGET_PC
+    MentLooksReset();
     MentPageShow(0);
 #endif
 }
@@ -4302,6 +4511,11 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     var_r24 = var_r30;
     var_r29 = arg1->unk_68 / 4;
     var_r23 = var_r29;
+#ifdef TARGET_PC
+    if (MentPickerUpdate(arg1, arg1->unk_6C, 0x10)) {
+        return;
+    }
+#endif
     if (arg1->unk_70[0] == 0) {
         if ((HuPadBtnDown[arg1->unk_6C] & PAD_BUTTON_A) != 0) {
             arg1->unk_70[0] = 1;
@@ -4352,7 +4566,7 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
         do {
             for (var_r28 = 0; var_r28 < 4; var_r28++) {
                 if ((var_r28 != arg1->unk_58) && (lbl_1_bss_3114[var_r28].unk_60 == 0)
-                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68)) {
+                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68) && !MENT_BOX_FREE(var_r30 + (var_r29 * 4))) {
                     if ((var_r27 == 0) || (var_r26 == 0)) {
                         if (((var_r30 + var_r27) > 3) || ((var_r30 + var_r27) < 0)) {
                             var_r30 = var_r24;
@@ -4523,6 +4737,11 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     var_r23 = var_r30 = arg1->unk_68 % 4;
     var_r29 = arg1->unk_68 / 4;
     var_r22 = var_r29;
+#ifdef TARGET_PC
+    if (MentPickerUpdate(arg1, lbl_1_bss_3114->unk_6C, 0x18)) {
+        return;
+    }
+#endif
     if (arg1->unk_70[0] == 0) {
         if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_A) != 0) {
             arg1->unk_70[0] = 1;
@@ -4576,7 +4795,7 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
         do {
             for (var_r28 = 0; var_r28 < 4; var_r28++) {
                 if ((var_r28 != arg1->unk_58) && (lbl_1_bss_3114[var_r28].unk_70[0] == 1)
-                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68)) {
+                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68) && !MENT_BOX_FREE(var_r30 + (var_r29 * 4))) {
                     if ((var_r26 == 0) || (var_r25 == 0)) {
                         if (((var_r30 + var_r26) > 3) || ((var_r30 + var_r26) < 0)) {
                             var_r30 = var_r23;

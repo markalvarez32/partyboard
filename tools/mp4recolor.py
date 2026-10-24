@@ -233,7 +233,7 @@ def cmd_character(args):
                 with open(path, "wb") as f:
                     f.write(out)
         print(f"{char_id}: {total} colors changed")
-        characters.append({"id": char_id, "name": f"{name.capitalize()} {base.capitalize()}", "base": base})
+        characters.append({"id": char_id, "name": f"{name.capitalize()} {base.capitalize()}", "base": base, "costume": True})
     mod = {
         "id": f"local.{base}_colors",
         "name": f"{base.capitalize()} Colors",

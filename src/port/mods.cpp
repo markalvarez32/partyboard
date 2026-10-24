@@ -462,6 +462,7 @@ std::optional<Mod> open_mod(const fs::path& path) {
             variant.modId = mod.info.id;
             variant.id = entry.at("id").get<std::string>();
             variant.name = entry.value("name", variant.id);
+            variant.costume = entry.value("costume", false);
             const auto base = to_lower(entry.at("base").get<std::string>());
             for (int i = 0; i < kBaseCharacterCount; ++i) {
                 if (base == kBaseCharacterNames[i]) {
@@ -1032,6 +1033,11 @@ extern "C" int partyboard_mods_character_count(void) {
     return static_cast<int>(partyboard::mods::s_variants.size());
 }
 
+extern "C" int partyboard_mods_character_costume(int k) {
+    using namespace partyboard::mods;
+    return k >= 0 && k < static_cast<int>(s_variants.size()) && s_variants[k].costume ? 1 : 0;
+}
+
 extern "C" int partyboard_mods_character_base(int k) {
     using namespace partyboard::mods;
     return k >= 0 && k < static_cast<int>(s_variants.size()) ? s_variants[k].base : -1;
@@ -1083,7 +1089,8 @@ extern "C" void partyboard_mods_place_characters(const int* wanted, int* spots, 
     HuDataRemapDirs();
 }
 
-extern "C" const char* partyboard_mods_character_message(const char* mes, const char* nameMes, int spot) {
+extern "C" const char* partyboard_mods_character_message(const char* mes, const char* nameMes, const char* baseNameMes,
+                                                          int spot) {
     using namespace partyboard::mods;
     if (mes == nullptr || nameMes == nullptr || spot < 0 || spot >= kBaseCharacterCount || s_placed[spot] < 0) {
         return mes;
@@ -1099,8 +1106,20 @@ extern "C" const char* partyboard_mods_character_message(const char* mes, const 
     if (name.empty() || pos == std::string::npos) {
         return mes;
     }
+    // A costume keeps its base's name, even in another character's spot.
+    const auto& variant = s_variants[s_placed[spot]];
+    std::string newName = variant.name;
+    if (variant.costume) {
+        if (baseNameMes == nullptr || variant.base == spot) {
+            return mes;
+        }
+        std::string_view baseName{baseNameMes};
+        while (!baseName.empty() && static_cast<unsigned char>(baseName.front()) < 0x20) {
+            baseName.remove_prefix(1);
+        }
+        newName = std::string{baseName};
+    }
     // Entries are never removed, since text windows keep pointers to them.
-    const auto& newName = s_variants[s_placed[spot]].name;
     auto [it, inserted] = s_characterMessages.try_emplace({original, newName});
     if (inserted) {
         it->second = original;

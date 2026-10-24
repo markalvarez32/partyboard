@@ -96,7 +96,10 @@ void *MessData_MesPtrGet(void *messdata, u32 id)
         // Bank 0 holds the character names, eight at a time in select screen order.
         if ((id >> 16) == 0) {
             int spot = (id & 0xFFFF) % 8;
-            return (void *)partyboard_mods_character_message(_MessData_MesPtrGet(bank, id), _MessData_MesPtrGet(bank, spot), spot);
+            int k = partyboard_mods_spot_character(spot);
+            int base = k >= 0 ? partyboard_mods_character_base(k) : spot;
+            return (void *)partyboard_mods_character_message(
+                _MessData_MesPtrGet(bank, id), _MessData_MesPtrGet(bank, spot), _MessData_MesPtrGet(bank, base), spot);
         }
 #endif
         return _MessData_MesPtrGet(bank, id);

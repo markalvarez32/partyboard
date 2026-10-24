@@ -44,6 +44,8 @@ struct CharacterVariant {
     std::string id;
     std::string name;
     int base = -1;
+    // An alternate look of its base (like a color), picked from the base's box instead of a box of its own.
+    bool costume = false;
     // "<modId>/<id>", as stored in the game.characterVariants setting
     std::string key() const { return modId + "/" + id; }
 };
