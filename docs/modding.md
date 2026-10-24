@@ -107,9 +107,13 @@ game's animations rely on, so treat the armature as a painting aid and keep the 
 ## New characters
 
 A mod can add characters built on one of the original eight, their base, whose skeleton and animations they reuse.
-In **Settings > Graphics > Characters**, put a mod character in any of the eight spots on the select screen, then
-restart. Picking that spot then gives you the mod character, in every board and minigame. Use a spot nobody in your
-group plays, so you lose no one: for example put Bowser Jr. in Daisy's spot and he can play alongside Wario.
+In Party Mode, mod characters get boxes of their own: press down from the bottom row of the character select
+screen to page to them (an arrow shows when there are more). Once everyone has chosen, each mod character borrows a
+spot that nobody picked, its base's spot if it is free, and plays there in every board and minigame. So Bowser Jr.
+can play alongside Wario, and Red Yoshi alongside Yoshi.
+
+Other modes use **Settings > Graphics > Characters**, which puts a mod character in one of the eight spots after a
+restart.
 
 Declare characters in `mod.json`:
 
@@ -136,7 +140,7 @@ characters/bowserjr/mot.bin         or a whole replacement pack
 Anything you leave out comes from the base. The new model needs the base's skeleton, since the animations are the
 base's.
 
-The character's name replaces the spot's name in the game's text. Files the game picks by character number
+The character's name replaces the borrowed spot's name in the game's text. Files the game picks by character number
 (select screen pictures, board icons, character-specific animations in minigames, and so on; see
 `src/port/character_runs.inc`) come from the character's base while it plays in another character's spot, so they
 match its skeleton. A character can bring its own copies in `characters/<id>/overlay/`, named after its base's
