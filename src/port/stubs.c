@@ -11,13 +11,18 @@
 
 static VIRetraceCallback sVIRetraceCallback = NULL;
 
+void partyboard_log_text(const char *text);
+
 void OSReport(const char *msg, ...)
 {
+    char buffer[1024];
     va_list args;
     va_start(args, msg);
-    vprintf(msg, args);
-    fflush(stdout);
+    vsnprintf(buffer, sizeof(buffer), msg, args);
     va_end(args);
+    fputs(buffer, stdout);
+    fflush(stdout);
+    partyboard_log_text(buffer);
 }
 
 u32 OSGetConsoleType()

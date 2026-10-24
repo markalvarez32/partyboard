@@ -65,7 +65,15 @@ void OSPanic(const char* file, int line, const char* msg, ...) {
     va_start(args, msg);
     vsnprintf(buffer, 0x400U, msg, args);
 #ifdef TARGET_PC
-    fputs(buffer, stderr);
+    {
+        extern void partyboard_log_text(const char *text);
+        char where[256];
+        fputs(buffer, stderr);
+        snprintf(where, sizeof(where), "OSPanic %s:%d: ", file, line);
+        partyboard_log_text(where);
+        partyboard_log_text(buffer);
+        partyboard_log_text("\n");
+    }
 #endif
     puts = XFB_puts((s8*)buffer, sp74, sp70);
     XFB_CR(puts, &sp74, &sp70);
