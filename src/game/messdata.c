@@ -2,6 +2,9 @@
 
 #ifdef TARGET_PC
 #include <port/byteswap.h>
+
+// port/mods.cpp: puts a mod character's name in place of the original it stands in for
+const char *partyboard_mods_character_message(const char *mes, const char *name_mes, int spot);
 #endif
 
 static void *MessData_MesDataGet(void *messdata, u32 id)
@@ -91,6 +94,13 @@ void *MessData_MesPtrGet(void *messdata, u32 id)
 {
     void *bank = MessData_MesDataGet(messdata, id);
     if(bank) {
+#ifdef TARGET_PC
+        // Bank 0 holds the character names, eight at a time in select screen order.
+        if ((id >> 16) == 0) {
+            int spot = (id & 0xFFFF) % 8;
+            return (void *)partyboard_mods_character_message(_MessData_MesPtrGet(bank, id), _MessData_MesPtrGet(bank, spot), spot);
+        }
+#endif
         return _MessData_MesPtrGet(bank, id);
     }
     return NULL;

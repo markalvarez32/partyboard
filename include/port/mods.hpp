@@ -78,6 +78,8 @@ const std::vector<CharacterVariant>& character_variants();
 // The variant key selected for a base character, or empty for the original.
 std::string selected_variant(int base);
 void select_variant(int base, const std::string& key);
+// The variant key that was selected when the game started, which is the one in use until a restart.
+std::string active_variant(int base);
 
 }
 

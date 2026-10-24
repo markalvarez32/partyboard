@@ -570,8 +570,13 @@ SettingsWindow::SettingsWindow(bool prelaunch)
                                               .getValue =
                                                   [base, variants, current] {
                                                       const int i = current();
-                                                      return i == 0 ? Rml::String(kBaseDisplayNames[base])
-                                                                    : Rml::String(variants[i - 1].name);
+                                                      Rml::String name = i == 0 ? Rml::String(kBaseDisplayNames[base])
+                                                                                : Rml::String(variants[i - 1].name);
+                                                      // Character changes load when the game starts.
+                                                      if (mods::selected_variant(base) != mods::active_variant(base)) {
+                                                          name += " (after restart)";
+                                                      }
+                                                      return name;
                                                   },
                                               .isModified = [current] { return current() != 0; },
                                               .submit = false,

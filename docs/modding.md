@@ -134,8 +134,20 @@ characters/bowserjr/mot.bin         or a whole replacement pack
 ```
 
 Anything you leave out comes from the base. The new model needs the base's skeleton, since the animations are the
-base's. For now the select screen icon, name, voice and minigame portraits still belong to the spot's original
-character.
+base's.
+
+The character's name replaces the spot's name in the game's text. A character can also bring its own pictures in
+`characters/<id>/overlay/`, which works like a mod's `overlay/` but is only used while the character is placed. Name
+the party menu's character pictures after the base's files and they move to whichever spot the character fills:
+
+```
+characters/bowserjr/overlay/data/ment.bin/0x1E.anm   select screen picture (Wario's is 0x1E; Mario's 0x1A to Waluigi's 0x21)
+characters/bowserjr/overlay/data/ment.bin/0x35.anm   small picture (0x31 to 0x38)
+characters/bowserjr/overlay/data/ment.bin/0x52.anm   team picture (0x4E to 0x55)
+```
+
+`tools/mp4anm.py` exports a sprite's picture to PNG and replaces it with your own, keeping the sprite's size and
+format. Voice and minigame portraits still belong to the spot's original character.
 
 ### Recolored characters
 
