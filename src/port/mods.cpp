@@ -1,6 +1,7 @@
 // Asset mod loader. Bundle and overlay handling ported from Dusklight (Credits: TwilitRealm).
 
 #include "port/mods.hpp"
+#include "port/mods_c.h"
 
 #include "port/texture_replacements.hpp"
 
@@ -200,14 +201,28 @@ constexpr int kCharacterPackKindCount = 3;
 
 // Variant key in use in each spot since startup, or empty for the original.
 std::array<std::string, kBaseCharacterCount> s_activeKeys;
-// Display name of the character placed in each spot, or empty for the original.
-std::array<std::string, kBaseCharacterCount> s_spotNames;
-// Character name messages with a placed character's name, by original text and spot.
-std::map<std::pair<std::string, int>, std::string> s_characterMessages;
+// Character name messages with a placed character's name, by original text and new name.
+std::map<std::pair<std::string, std::string>, std::string> s_characterMessages;
 
-// Data pack entry numbers for each variant's rebuilt packs, by variant key; -1 keeps the base pack.
+// Data pack entry numbers for each variant's rebuilt packs, by variant key; -1 uses the base's pack.
 std::unordered_map<std::string, std::array<s32, kCharacterPackKindCount>> s_variantEntryNums;
 std::vector<CharacterVariant> s_variants;
+
+// A variant's own copies of single pack files (characters/<id>/overlay/<pack>.bin/<index>), by lowercased
+// pack path ("data/ment.bin") and index, loaded when first used.
+struct VariantFiles {
+    std::shared_ptr<Bundle> bundle;
+    std::map<std::pair<std::string, uint32_t>, std::string> paths;
+    std::map<std::pair<std::string, uint32_t>, std::vector<uint8_t>> loaded;
+};
+std::vector<VariantFiles> s_variantFiles; // parallel to s_variants
+
+// The variant (index into s_variants) playing in each character spot, or -1 for the original.
+std::array<int, kBaseCharacterCount> s_placed = [] {
+    std::array<int, kBaseCharacterCount> placed;
+    placed.fill(-1);
+    return placed;
+}();
 
 // One file served to Aurora's DVD layer in place of (or in addition to) a disc file.
 struct OverlaySource {
@@ -499,30 +514,30 @@ std::optional<fs::path> texture_root(Mod& mod) {
     return any ? std::optional{root} : std::nullopt;
 }
 
-// Runs of eight pack files, one per character in select screen order, such as the party menu's
-// character pictures. A placed character's files are written for its base's entry and moved to its spot's.
 struct CharacterRun {
     std::string_view pack;
     uint32_t first;
+    uint32_t stride;
 };
 constexpr CharacterRun kCharacterRuns[] = {
-    {"/data/ment.bin", 0x1A}, // party menu: character select pictures
-    {"/data/ment.bin", 0x31}, // party menu: small pictures
-    {"/data/ment.bin", 0x4E}, // party menu: team pictures
+#include "character_runs.inc"
 };
 
-uint32_t character_entry_for_spot(const std::string& pack, uint32_t index, int base, int spot) {
-    if (base == spot) {
-        return index;
-    }
-    const auto lower = to_lower(pack);
+// If file `index` of `pack` belongs to a character, its spot and the same file for `character` instead.
+int character_run_spot(std::string_view pack, uint32_t index, int character, uint32_t* characterIndex) {
     for (const auto& run : kCharacterRuns) {
-        if (lower == run.pack && index == run.first + static_cast<uint32_t>(base)) {
-            return run.first + static_cast<uint32_t>(spot);
+        if (pack != run.pack || index < run.first || index >= run.first + kBaseCharacterCount * run.stride) {
+            continue;
         }
+        const uint32_t rel = index - run.first;
+        *characterIndex = run.first + static_cast<uint32_t>(character) * run.stride + rel % run.stride;
+        return static_cast<int>(rel / run.stride);
     }
-    return index;
+    return -1;
 }
+
+// Packs read whole from the disc, for files a placed character borrows from its base.
+std::map<std::string, std::optional<std::vector<uint8_t>>> s_discPacks;
 
 // Selected variant keys and the spot each fills.
 std::map<std::string, int> selected_spots() {
@@ -544,40 +559,19 @@ void apply_overlays() {
     std::map<std::string, std::pair<std::string, WholeFile>> wholeFiles;
     std::map<std::string, std::pair<std::string, std::map<uint32_t, std::pair<size_t, std::string>>>> packEntries;
 
-    // Characters placed in a spot bring their own overlay/ files (select screen pictures and the like),
-    // used only while they are placed.
-    const auto spots = selected_spots();
     for (size_t m = 0; m < s_mods.size(); ++m) {
         auto& mod = s_mods[m];
         for (const auto& file : mod.files) {
-            std::string_view overlayPath;
-            const CharacterVariant* variant = nullptr;
-            int spot = -1;
-            if (file.starts_with(kOverlayPrefix)) {
-                overlayPath = std::string_view{file}.substr(kOverlayPrefix.size());
-            } else if (file.starts_with(kCharactersPrefix)) {
-                for (const auto& character : mod.characters) {
-                    const std::string prefix = fmt::format("{}{}/{}", kCharactersPrefix, character.id, kOverlayPrefix);
-                    if (const auto it = spots.find(character.key()); file.starts_with(prefix) && it != spots.end()) {
-                        overlayPath = std::string_view{file}.substr(prefix.size());
-                        variant = &character;
-                        spot = it->second;
-                    }
-                }
-            }
-            if (overlayPath.empty() || file.ends_with('/')) {
+            if (!file.starts_with(kOverlayPrefix) || file.ends_with('/')) {
                 continue;
             }
-            const std::string discPath = "/" + std::string{overlayPath};
+            const std::string discPath = "/" + file.substr(kOverlayPrefix.size());
 
             // overlay/<dir>/<pack>.bin/<index>[.ext] addresses one file inside a pack.
             const auto slash = discPath.rfind('/');
             const std::string parent = discPath.substr(0, slash);
-            auto index = parse_pack_index(std::string_view{discPath}.substr(slash + 1));
+            const auto index = parse_pack_index(std::string_view{discPath}.substr(slash + 1));
             if (slash > 0 && to_lower(parent).ends_with(kPackExtension) && index) {
-                if (variant != nullptr) {
-                    index = character_entry_for_spot(parent, *index, variant->base, spot);
-                }
                 auto& [packPath, entries] = packEntries[to_lower(parent)];
                 packPath = parent;
                 if (const auto it = entries.find(*index); it != entries.end() && it->second.first != m) {
@@ -701,7 +695,23 @@ void apply_overlays() {
                     Log.error("[{}] character '{}': {}", mod.info.id, variant.id, e.what());
                 }
             }
+            VariantFiles files{.bundle = mod.bundle};
+            const std::string overlayRoot = root + std::string{kOverlayPrefix};
+            for (const auto& file : mod.files) {
+                if (!file.starts_with(overlayRoot)) {
+                    continue;
+                }
+                const auto rel = std::string_view{file}.substr(overlayRoot.size());
+                const auto slash = rel.rfind('/');
+                const auto index = slash == std::string_view::npos ? std::nullopt : parse_pack_index(rel.substr(slash + 1));
+                if (!index || !to_lower(rel.substr(0, slash)).ends_with(kPackExtension)) {
+                    Log.warn("[{}] {} is not a file inside a pack; skipped", mod.info.id, file);
+                    continue;
+                }
+                files.paths[{to_lower(rel.substr(0, slash)), *index}] = file;
+            }
             s_variants.push_back(variant);
+            s_variantFiles.push_back(std::move(files));
         }
     }
 
@@ -782,9 +792,9 @@ void initialize() {
 
     for (const auto& [key, spot] : selected_spots()) {
         s_activeKeys[spot] = key;
-        for (const auto& variant : s_variants) {
-            if (variant.key() == key) {
-                s_spotNames[spot] = variant.name;
+        for (size_t i = 0; i < s_variants.size(); ++i) {
+            if (s_variants[i].key() == key) {
+                s_placed[spot] = static_cast<int>(i);
             }
         }
     }
@@ -915,33 +925,167 @@ extern "C" int partyboard_mods_remap_data_dir(const char* path, int entryNum) {
         name.remove_prefix(1);
     }
     const auto lower = to_lower(name);
-    for (int base = 0; base < kBaseCharacterCount; ++base) {
+    for (int spot = 0; spot < kBaseCharacterCount; ++spot) {
         for (int kind = 0; kind < kCharacterPackKindCount; ++kind) {
-            if (lower != fmt::format("data/{}{}.bin", kBaseCharacterNames[base], kCharacterPackKinds[kind])) {
+            if (lower != fmt::format("data/{}{}.bin", kBaseCharacterNames[spot], kCharacterPackKinds[kind])) {
                 continue;
             }
-            const auto key = selected_variant(base);
-            if (key.empty()) {
+            if (s_placed[spot] < 0) {
                 return entryNum;
             }
-            const auto it = s_variantEntryNums.find(key);
-            if (it == s_variantEntryNums.end()) {
-                Log.warn("Selected character variant '{}' for {} is not installed", key, kBaseCharacterNames[base]);
-                return entryNum;
-            }
-            if (it->second[kind] >= 0) {
-                Log.info("Using character variant '{}' for {}", key, path);
+            const auto& variant = s_variants[s_placed[spot]];
+            if (const auto it = s_variantEntryNums.find(variant.key());
+                it != s_variantEntryNums.end() && it->second[kind] >= 0) {
+                Log.info("Using '{}' for {}", variant.key(), path);
                 return it->second[kind];
             }
-            return entryNum;
+            // Packs the character doesn't replace come from its base, whose skeleton it shares.
+            const auto basePath =
+                fmt::format("/data/{}{}.bin", kBaseCharacterNames[variant.base], kCharacterPackKinds[kind]);
+            const s32 baseEntry = DVDConvertPathToEntrynum(basePath.c_str());
+            return baseEntry >= 0 ? baseEntry : entryNum;
         }
     }
     return entryNum;
 }
 
+extern "C" const void* partyboard_mods_file_override(const char* packPath, int index, u32* rawLen, u32* decodeType) {
+    using namespace partyboard::mods;
+    if (packPath == nullptr || index < 0) {
+        return nullptr;
+    }
+    std::string_view name{packPath};
+    if (name.starts_with('/')) {
+        name.remove_prefix(1);
+    }
+    const auto pack = to_lower(name);
+    uint32_t spot = 0;
+    uint32_t baseIndex = 0;
+    {
+        uint32_t ignored = 0;
+        const int found = character_run_spot(pack, static_cast<uint32_t>(index), 0, &ignored);
+        if (found < 0 || s_placed[found] < 0) {
+            return nullptr;
+        }
+        spot = static_cast<uint32_t>(found);
+    }
+    const int k = s_placed[spot];
+    const int base = s_variants[k].base;
+    character_run_spot(pack, static_cast<uint32_t>(index), base, &baseIndex);
+    // The character's own copy, named after its base's entry.
+    if (const auto* data = partyboard_mods_character_file(k, pack.c_str(), static_cast<int>(baseIndex), rawLen)) {
+        *decodeType = 0; // stored uncompressed
+        return data;
+    }
+    if (base == static_cast<int>(spot)) {
+        return nullptr;
+    }
+    // Otherwise the base's file, since the character uses the base's skeleton and animations.
+    auto it = s_discPacks.find(pack);
+    if (it == s_discPacks.end()) {
+        it = s_discPacks.emplace(pack, read_disc_file("/" + pack)).first;
+    }
+    const auto& data = it->second;
+    if (!data || data->size() < 8 || baseIndex >= read_be32(data->data())) {
+        return nullptr;
+    }
+    const uint32_t offset = read_be32(data->data() + 4 + baseIndex * 4);
+    if (offset + 8 > data->size()) {
+        return nullptr;
+    }
+    *rawLen = read_be32(data->data() + offset);
+    *decodeType = read_be32(data->data() + offset + 4);
+    return data->data() + offset + 8;
+}
+
+extern "C" const void* partyboard_mods_character_file(int k, const char* packPath, int index, u32* size) {
+    using namespace partyboard::mods;
+    if (k < 0 || k >= static_cast<int>(s_variants.size()) || packPath == nullptr || index < 0) {
+        return nullptr;
+    }
+    std::string_view name{packPath};
+    if (name.starts_with('/')) {
+        name.remove_prefix(1);
+    }
+    auto& files = s_variantFiles[k];
+    const std::pair key{to_lower(name), static_cast<uint32_t>(index)};
+    auto it = files.loaded.find(key);
+    if (it == files.loaded.end()) {
+        const auto path = files.paths.find(key);
+        if (path == files.paths.end()) {
+            return nullptr;
+        }
+        try {
+            it = files.loaded.emplace(key, files.bundle->read_file(path->second)).first;
+        } catch (const std::exception& e) {
+            Log.error("[{}] unable to read {}: {}", s_variants[k].modId, path->second, e.what());
+            return nullptr;
+        }
+    }
+    if (size != nullptr) {
+        *size = static_cast<u32>(it->second.size());
+    }
+    return it->second.data();
+}
+
+extern "C" int partyboard_mods_character_count(void) {
+    return static_cast<int>(partyboard::mods::s_variants.size());
+}
+
+extern "C" int partyboard_mods_character_base(int k) {
+    using namespace partyboard::mods;
+    return k >= 0 && k < static_cast<int>(s_variants.size()) ? s_variants[k].base : -1;
+}
+
+extern "C" const char* partyboard_mods_character_name(int k) {
+    using namespace partyboard::mods;
+    return k >= 0 && k < static_cast<int>(s_variants.size()) ? s_variants[k].name.c_str() : "";
+}
+
+extern "C" int partyboard_mods_spot_character(int spot) {
+    using namespace partyboard::mods;
+    return spot >= 0 && spot < kBaseCharacterCount ? s_placed[spot] : -1;
+}
+
+extern "C" void HuDataRemapDirs(void);
+
+extern "C" void partyboard_mods_place_characters(const int* wanted, int* spots, int count) {
+    using namespace partyboard::mods;
+    std::array<bool, kBaseCharacterCount> taken{};
+    for (int i = 0; i < count; ++i) {
+        spots[i] = wanted[i];
+        if (wanted[i] >= 0 && wanted[i] < kBaseCharacterCount) {
+            taken[wanted[i]] = true;
+        }
+    }
+    s_placed.fill(-1);
+    for (int i = 0; i < count; ++i) {
+        const int k = wanted[i] - kBaseCharacterCount;
+        if (k < 0 || k >= static_cast<int>(s_variants.size())) {
+            continue;
+        }
+        // Prefer the base's own spot, which keeps its voice and minigame data; otherwise any free one.
+        int spot = taken[s_variants[k].base] ? -1 : s_variants[k].base;
+        for (int candidate = 0; spot < 0 && candidate < kBaseCharacterCount; ++candidate) {
+            if (!taken[candidate]) {
+                spot = candidate;
+            }
+        }
+        if (spot < 0) {
+            spots[i] = s_variants[k].base;
+            continue;
+        }
+        taken[spot] = true;
+        s_placed[spot] = k;
+        spots[i] = spot;
+        Log.info("Player {} plays '{}' in {}'s spot", i + 1, s_variants[k].key(), kBaseCharacterNames[spot]);
+    }
+    HuDataRemapDirs();
+}
+
 extern "C" const char* partyboard_mods_character_message(const char* mes, const char* nameMes, int spot) {
     using namespace partyboard::mods;
-    if (mes == nullptr || nameMes == nullptr || spot < 0 || spot >= kBaseCharacterCount || s_spotNames[spot].empty()) {
+    if (mes == nullptr || nameMes == nullptr || spot < 0 || spot >= kBaseCharacterCount || s_placed[spot] < 0) {
         return mes;
     }
     // The plain name message is the name after a leading control code; the other messages for this spot
@@ -955,10 +1099,12 @@ extern "C" const char* partyboard_mods_character_message(const char* mes, const 
     if (name.empty() || pos == std::string::npos) {
         return mes;
     }
-    auto [it, inserted] = s_characterMessages.try_emplace({original, spot});
+    // Entries are never removed, since text windows keep pointers to them.
+    const auto& newName = s_variants[s_placed[spot]].name;
+    auto [it, inserted] = s_characterMessages.try_emplace({original, newName});
     if (inserted) {
         it->second = original;
-        it->second.replace(pos, name.size(), s_spotNames[spot]);
+        it->second.replace(pos, name.size(), newName);
     }
     return it->second.c_str();
 }

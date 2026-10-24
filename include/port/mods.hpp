@@ -83,6 +83,3 @@ std::string active_variant(int base);
 
 }
 
-// Called by HuDataInit for every data pack: returns the entry number to read instead (a selected
-// character variant's pack), or entryNum unchanged.
-extern "C" int partyboard_mods_remap_data_dir(const char* path, int entryNum);

@@ -15,8 +15,7 @@
 void **HuDataReadMultiSub(s32 *dataNum, BOOL use_num, s32 num);
 
 #ifdef TARGET_PC
-// port/mods.cpp: swaps in a selected character variant's pack
-int partyboard_mods_remap_data_dir(const char *path, int entryNum);
+#include <port/mods_c.h>
 #endif
 
 #define DATA_MAX_READSTAT 128
@@ -38,6 +37,20 @@ static HUDATASTAT ATTRIBUTE_ALIGN(32)
 ReadDataStat[DATA_MAX_READSTAT + 1]; // to avoid bug
 #else
 ReadDataStat[DATA_MAX_READSTAT];
+#endif
+
+#ifdef TARGET_PC
+// Points the data packs at a newly placed mod character's packs. Packs already read keep their data until closed.
+void HuDataRemapDirs(void)
+{
+    FileListEntry *dir_stat;
+    for (dir_stat = DataDirStat; dir_stat->name; dir_stat++) {
+        s32 entryNum = DVDConvertPathToEntrynum(dir_stat->name);
+        if (entryNum != -1) {
+            dir_stat->entryNum = partyboard_mods_remap_data_dir(dir_stat->name, entryNum);
+        }
+    }
+}
 #endif
 
 void HuDataInit(void)
@@ -312,6 +325,18 @@ static void GetFileInfo(HUDATASTAT *readStat, s32 fileNum)
 #ifdef BYTESWAPPING
     byteswap_u32(&readStat->rawLen);
     byteswap_u32(&readStat->decodeType);
+#endif
+#ifdef TARGET_PC
+    {
+        u32 rawLen;
+        u32 decodeType;
+        const void *data = partyboard_mods_file_override(DataDirStat[readStat->dirId].name, fileNum, &rawLen, &decodeType);
+        if (data) {
+            readStat->fileDataP = (void *)data;
+            readStat->rawLen = rawLen;
+            readStat->decodeType = decodeType;
+        }
+    }
 #endif
 }
 

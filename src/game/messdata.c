@@ -2,9 +2,7 @@
 
 #ifdef TARGET_PC
 #include <port/byteswap.h>
-
-// port/mods.cpp: puts a mod character's name in place of the original it stands in for
-const char *partyboard_mods_character_message(const char *mes, const char *name_mes, int spot);
+#include <port/mods_c.h>
 #endif
 
 static void *MessData_MesDataGet(void *messdata, u32 id)

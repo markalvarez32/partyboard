@@ -136,9 +136,11 @@ characters/bowserjr/mot.bin         or a whole replacement pack
 Anything you leave out comes from the base. The new model needs the base's skeleton, since the animations are the
 base's.
 
-The character's name replaces the spot's name in the game's text. A character can also bring its own pictures in
-`characters/<id>/overlay/`, which works like a mod's `overlay/` but is only used while the character is placed. Name
-the party menu's character pictures after the base's files and they move to whichever spot the character fills:
+The character's name replaces the spot's name in the game's text. Files the game picks by character number
+(select screen pictures, board icons, character-specific animations in minigames, and so on; see
+`src/port/character_runs.inc`) come from the character's base while it plays in another character's spot, so they
+match its skeleton. A character can bring its own copies in `characters/<id>/overlay/`, named after its base's
+entries:
 
 ```
 characters/bowserjr/overlay/data/ment.bin/0x1E.anm   select screen picture (Wario's is 0x1E; Mario's 0x1A to Waluigi's 0x21)
