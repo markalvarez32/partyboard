@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstdio>
 #include <cstring>
