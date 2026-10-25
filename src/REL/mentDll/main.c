@@ -514,6 +514,13 @@ static void MentIconsCreate(s32 group)
     // The panel grows downward to hold four rows: 224 tall from y 31 becomes 278.
     HuSprScaleSet(group, 0x28, 1.0f, 278.0f / 224.0f);
     fn_1_6534(group, 0x28, 288.0f, 31.0f + 209.0f * 278.0f / 224.0f);
+    // The gold frame's corners and their shadows stretch the same way, so the frame stays around the panel.
+    for (i = 0; i < 4; i++) {
+        HuSprScaleSet(group, i + 0x29, 1.0f, 278.0f / 224.0f);
+        fn_1_6534(group, i + 0x29, lbl_1_data_57C[i][2], 31.0f + (lbl_1_data_57C[i][3] - 31.0f) * 278.0f / 224.0f);
+        HuSprScaleSet(group, i + 0x2D, 1.0f, 278.0f / 224.0f);
+        fn_1_6534(group, i + 0x2D, lbl_1_data_57C[i][2] + 1, 31.0f + (lbl_1_data_57C[i][3] + 6 - 31.0f) * 278.0f / 224.0f);
+    }
     sprite = HuSprCreate(MentSolidMake(32, 16, FALSE, TRUE, 0), 0x14, 0);
     HuSprGrpMemberSet(group, MENT_ARROW_DOWN, sprite);
     HuSprPosSet(group, MENT_ARROW_DOWN, 288.0f, 83.0f + 3 * 60.0f + 32.0f);
