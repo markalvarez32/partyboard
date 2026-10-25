@@ -5,6 +5,7 @@
 
 #include "port/texture_replacements.hpp"
 
+#include "aurora/lib/window.hpp"
 #include <aurora/dvd.h>
 #include <aurora/lib/logging.hpp>
 #include <aurora/texture.hpp>
@@ -1027,6 +1028,14 @@ extern "C" const void* partyboard_mods_character_file(int k, const char* packPat
         *size = static_cast<u32>(it->second.size());
     }
     return it->second.data();
+}
+
+extern "C" float partyboard_screen_aspect(void) {
+    const AuroraWindowSize size = aurora::window::get_window_size();
+    if (partyboard::getSettings().video.lockAspectRatio || size.width == 0 || size.height == 0) {
+        return 4.0f / 3.0f;
+    }
+    return static_cast<float>(size.width) / static_cast<float>(size.height);
 }
 
 extern "C" int partyboard_mods_character_count(void) {

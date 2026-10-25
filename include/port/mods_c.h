@@ -30,6 +30,9 @@ void partyboard_mods_place_characters(const int *wanted, int *spots, int count);
 // The mod character playing in a spot, or -1.
 int partyboard_mods_spot_character(int spot);
 
+// Width over height of the picture on screen: the window's, or 4:3 when the aspect ratio is locked.
+float partyboard_screen_aspect(void);
+
 // Called by data.c: returns the entry number to read for a data pack (a placed mod character's pack).
 int partyboard_mods_remap_data_dir(const char *path, int entryNum);
 // Called by data.c: for file `index` of a pack that the game picks by character, the file to use while a mod
