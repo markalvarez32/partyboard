@@ -46,6 +46,10 @@ struct CharacterVariant {
     int base = -1;
     // An alternate look of its base (like a color), picked from the base's box instead of a box of its own.
     bool costume = false;
+    // For a costume: the id of the mod character whose box it belongs to ("costumeOf"), or empty for its base's box.
+    std::string costumeOf;
+    // That character's index among all mod characters, or -1.
+    int owner = -1;
     // "<modId>/<id>", as stored in the game.characterVariants setting
     std::string key() const { return modId + "/" + id; }
 };

@@ -464,6 +464,7 @@ std::optional<Mod> open_mod(const fs::path& path) {
             variant.id = entry.at("id").get<std::string>();
             variant.name = entry.value("name", variant.id);
             variant.costume = entry.value("costume", false);
+            variant.costumeOf = entry.value("costumeOf", "");
             const auto base = to_lower(entry.at("base").get<std::string>());
             for (int i = 0; i < kBaseCharacterCount; ++i) {
                 if (base == kBaseCharacterNames[i]) {
@@ -714,6 +715,21 @@ void apply_overlays() {
             }
             s_variants.push_back(variant);
             s_variantFiles.push_back(std::move(files));
+        }
+    }
+
+    for (auto& variant : s_variants) {
+        if (!variant.costume || variant.costumeOf.empty()) {
+            continue;
+        }
+        for (size_t i = 0; i < s_variants.size(); ++i) {
+            if (s_variants[i].id == variant.costumeOf && !s_variants[i].costume) {
+                variant.owner = static_cast<int>(i);
+            }
+        }
+        if (variant.owner < 0) {
+            Log.warn("[{}] costume '{}' is for '{}', which no mod adds; it goes in {}'s box", variant.modId, variant.id,
+                variant.costumeOf, kBaseCharacterNames[variant.base]);
         }
     }
 
@@ -1047,6 +1063,11 @@ extern "C" int partyboard_mods_character_costume(int k) {
     return k >= 0 && k < static_cast<int>(s_variants.size()) && s_variants[k].costume ? 1 : 0;
 }
 
+extern "C" int partyboard_mods_character_owner(int k) {
+    using namespace partyboard::mods;
+    return k >= 0 && k < static_cast<int>(s_variants.size()) ? s_variants[k].owner : -1;
+}
+
 extern "C" int partyboard_mods_character_base(int k) {
     using namespace partyboard::mods;
     return k >= 0 && k < static_cast<int>(s_variants.size()) ? s_variants[k].base : -1;
@@ -1115,10 +1136,12 @@ extern "C" const char* partyboard_mods_character_message(const char* mes, const 
     if (name.empty() || pos == std::string::npos) {
         return mes;
     }
-    // A costume keeps its base's name, even in another character's spot.
+    // A costume keeps its box's name: its owner's, or its base's even in another character's spot.
     const auto& variant = s_variants[s_placed[spot]];
     std::string newName = variant.name;
-    if (variant.costume) {
+    if (variant.costume && variant.owner >= 0) {
+        newName = s_variants[variant.owner].name;
+    } else if (variant.costume) {
         if (baseNameMes == nullptr || variant.base == spot) {
             return mes;
         }

@@ -18,6 +18,8 @@ int partyboard_mods_character_count(void);
 int partyboard_mods_character_base(int k);
 // 1 when mod character k is an alternate look of its base, picked from the base's box.
 int partyboard_mods_character_costume(int k);
+// For a costume of a mod character's box: that mod character's number; otherwise -1.
+int partyboard_mods_character_owner(int k);
 const char *partyboard_mods_character_name(int k);
 // Mod character k's copy of file `index` of a pack ("data/ment.bin"), named after its base's entry,
 // or NULL. The data stays valid; copy it before changing it.

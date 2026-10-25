@@ -250,10 +250,10 @@ static float MentDX = 80.0f;
 static s32 MentSlotCount = 8;
 static s32 MentBoxMod[MENT_SLOT_MAX];
 static ANIMDATA *MentIcons[MENT_SLOT_MAX];
-// The looks of each original character: index 0 is its own, i is mod character MentLooks[base][i - 1].
-static s32 MentLooks[8][MENT_LOOK_MAX - 1];
-static s32 MentLookNum[8];
-static ANIMDATA *MentLookIcons[8][MENT_LOOK_MAX];
+// The looks of each box: index 0 is its own, i is mod character MentLooks[box][i - 1].
+static s32 MentLooks[MENT_SLOT_MAX][MENT_LOOK_MAX - 1];
+static s32 MentLookNum[MENT_SLOT_MAX];
+static ANIMDATA *MentLookIcons[MENT_SLOT_MAX][MENT_LOOK_MAX];
 // The look each player chose: -1 for the character's own, otherwise the mod character.
 static s32 MentLook[4] = { -1, -1, -1, -1 };
 static s32 MentPicker = -1;
@@ -457,22 +457,29 @@ static void MentIconsCreate(s32 group)
     MentTeamGroup = -1;
     MentPicker = -1;
     MentSlotCount = 8;
-    for (base = 0; base < 8; base++) {
-        MentLookNum[base] = 0;
+    for (slot = 0; slot < MENT_SLOT_MAX; slot++) {
+        MentLookNum[slot] = 0;
     }
     if (lbl_1_bss_A8[0] == 0) {
         for (k = 0; k < count; k++) {
+            if (partyboard_mods_character_base(k) >= 0 && !partyboard_mods_character_costume(k) && MentSlotCount < MENT_SLOT_MAX) {
+                MentBoxMod[MentSlotCount++] = k;
+            }
+        }
+        // A costume goes in its owner's box when that mod character has one, otherwise in its base's.
+        for (k = 0; k < count; k++) {
             base = partyboard_mods_character_base(k);
-            if (base < 0) {
+            if (base < 0 || !partyboard_mods_character_costume(k)) {
                 continue;
             }
-            if (partyboard_mods_character_costume(k)) {
-                if (MentLookNum[base] < MENT_LOOK_MAX - 1) {
-                    MentLooks[base][MentLookNum[base]++] = k;
+            slot = base;
+            for (i = 8; i < MentSlotCount; i++) {
+                if (MentBoxMod[i] == partyboard_mods_character_owner(k)) {
+                    slot = i;
                 }
             }
-            else if (MentSlotCount < MENT_SLOT_MAX) {
-                MentBoxMod[MentSlotCount++] = k;
+            if (MentLookNum[slot] < MENT_LOOK_MAX - 1) {
+                MentLooks[slot][MentLookNum[slot]++] = k;
             }
         }
     }
@@ -487,15 +494,16 @@ static void MentIconsCreate(s32 group)
         // Held for the whole screen, since the boxes swap between them.
         HuSprAnimLock(MentIcons[slot]);
     }
-    for (base = 0; base < 8; base++) {
-        if (MentLookNum[base] == 0) {
+    for (slot = 0; slot < MentSlotNum(); slot++) {
+        if (MentLookNum[slot] == 0) {
             continue;
         }
-        MentLookIcons[base][0] = MentIcons[base];
-        for (i = 0; i < MentLookNum[base]; i++) {
-            MentLookIcons[base][i + 1]
-                = MentAnimReadOwn(MentLooks[base][i], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
-            HuSprAnimLock(MentLookIcons[base][i + 1]);
+        MentLookIcons[slot][0] = MentIcons[slot];
+        for (i = 0; i < MentLookNum[slot]; i++) {
+            base = partyboard_mods_character_base(MentLooks[slot][i]);
+            MentLookIcons[slot][i + 1]
+                = MentAnimReadOwn(MentLooks[slot][i], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
+            HuSprAnimLock(MentLookIcons[slot][i + 1]);
         }
     }
     for (i = 0; i < MENT_PAGE_SIZE; i++) {
@@ -613,7 +621,7 @@ static BOOL MentPickerUpdate(MentDllUnkBss3114Struct *player, s32 pad, s32 curso
         if (player->unk_70[0] != 0 || !(HuPadBtnDown[pad] & PAD_BUTTON_A)) {
             return FALSE;
         }
-        if (box >= 8 || MentLookNum[box] == 0) {
+        if (MentLookNum[box] == 0) {
             MentLook[player->unk_58] = -1;
             return FALSE;
         }
@@ -682,10 +690,10 @@ static s32 MentWantedFor(s32 player)
 {
     s32 box = lbl_1_bss_3114[player].unk_68;
 
-    if (box >= 8) {
-        return 8 + MentBoxMod[box];
+    if (MentLook[player] >= 0) {
+        return 8 + MentLook[player];
     }
-    return MentLook[player] >= 0 ? 8 + MentLook[player] : box;
+    return box >= 8 ? 8 + MentBoxMod[box] : box;
 }
 
 // The small faces on the later party screens are read per spot, so they are read again whenever the
