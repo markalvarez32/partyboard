@@ -100,6 +100,15 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
+# Zip reader for .pbmod bundles
+FetchContent_Declare(miniz
+        URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+        URL_HASH SHA256=ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(miniz)
+
 set(VERSION 1)
 set(PARTY_BOARD_BUNDLE_NAME PartyBoard)
 set(PARTY_BOARD_BUNDLE_IDENTIFIER com.mariopartyrd.partyboard)
@@ -131,7 +140,27 @@ elseif (MSVC)
 endif ()
 
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+
+# make sure the process only ever contains one SDL instance
+if (NOT TARGET SDL3::SDL3)
+    get_target_property(_partyboard_sdl3 ${AURORA_SDL3_TARGET} ALIASED_TARGET)
+    if (NOT _partyboard_sdl3)
+        set(_partyboard_sdl3 ${AURORA_SDL3_TARGET})
+    endif ()
+    add_library(SDL3::SDL3 ALIAS ${_partyboard_sdl3})
+endif ()
 add_subdirectory(extern/musyx EXCLUDE_FROM_ALL)
+set_target_properties(musyx PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if (NOT AURORA_SDL3_TARGET STREQUAL "SDL3::SDL3")
+    foreach (_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+        get_target_property(_musyx_libs musyx ${_prop})
+        if (_musyx_libs)
+            list(TRANSFORM _musyx_libs REPLACE "^SDL3::SDL3$" "${AURORA_SDL3_TARGET}")
+            list(TRANSFORM _musyx_libs REPLACE "^\\$<LINK_ONLY:SDL3::SDL3>$" "$<LINK_ONLY:${AURORA_SDL3_TARGET}>")
+            set_target_properties(musyx PROPERTIES ${_prop} "${_musyx_libs}")
+        endif ()
+    endforeach ()
+endif ()
 
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)
 
@@ -141,10 +170,10 @@ include(files.cmake)
 source_group("Game" FILES ${GAME_FILES})
 source_group("Port" FILES ${PORT_FILES})
 
-add_library(dol SHARED ${GAME_FILES} ${PORT_FILES} extern/libco/libco.c)
+add_library(dol SHARED ${GAME_FILES} ${PORT_FILES} extern/libco/libco.c ${miniz_SOURCE_DIR}/miniz.c)
 set_target_properties(dol PROPERTIES C_VISIBILITY_PRESET default CXX_VISIBILITY_PRESET default)
-target_compile_definitions(dol PRIVATE TARGET_PC NON_MATCHING OPTIMIZED_TEXTURE_LOADING BYTESWAPPING TARGET_DOL VERSION=${VERSION} MUSY_VERSION_MAJOR=1 MUSY_VERSION_MINOR=5 MUSY_VERSION_PATCH=4)
-target_include_directories(dol PRIVATE include extern extern/aurora/include extern/aurora/include/dolphin ${CMAKE_BINARY_DIR})
+target_compile_definitions(dol PRIVATE TARGET_PC NON_MATCHING OPTIMIZED_TEXTURE_LOADING BYTESWAPPING TARGET_DOL VERSION=${VERSION})
+target_include_directories(dol PRIVATE include extern extern/aurora/include extern/aurora/include/dolphin ${CMAKE_BINARY_DIR} ${miniz_SOURCE_DIR})
 target_link_libraries(dol PUBLIC aurora::core aurora::card aurora::dvd aurora::gx aurora::mtx aurora::os aurora::si aurora::vi aurora::pad musyx absl::flat_hash_map nlohmann_json::nlohmann_json fmt::fmt rmlui_debugger)
 # TODO it doesn't work on Linux yet
 if (WIN32)

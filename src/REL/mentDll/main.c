@@ -14,6 +14,8 @@
 #include "game/window.h"
 #include "game/wipe.h"
 
+#include <string.h>
+
 #ifndef __MWERKS__
 extern s32 rand8(void);
 #include "game/audio.h"
@@ -197,6 +199,573 @@ MentDllUnkBss64Struct lbl_1_bss_64;
 s32 lbl_1_bss_24[16];
 s32 lbl_1_bss_14[4];
 s32 lbl_1_bss_8[3];
+
+#ifdef TARGET_PC
+#include "game/memory.h"
+#include "port/mods_c.h"
+
+// Mod characters with a look of their own (like Birdo) get boxes on extra pages of the party select screen:
+// pressing down from the bottom row (or up from the top row) moves to the next (or previous) page. A cursor
+// holds a box: 0-7 are the original characters and 8+ the new ones. Costume mod characters (like Yoshi's
+// colors or another model of Mario) instead appear in a row that opens when their base's box is chosen,
+// like the colors in Mario Kart. When the players are chosen, each mod character borrows a free character
+// spot (see partyboard_mods_place_characters) and the box becomes that spot.
+// The boxes are smaller than the original ones and laid out in a grid of MentCols columns and four rows on a
+// taller panel, kept square on screen however wide the window is (see MentLayout).
+#define MENT_PAGE_MAX 36
+#define MENT_PAGE_ROWS 4
+#define MENT_PAGE_SIZE (MentCols * MENT_PAGE_ROWS)
+#define MENT_COLS MentCols
+#define MENT_COL(slot) ((slot) % MENT_COLS)
+#define MENT_ROW(slot) ((slot) / MENT_COLS)
+// Offsets below a box shrink with it.
+#define MENT_TAG_Y(y) ((y) * MentSY)
+#define MENT_SLOT_MAX 64
+#define MENT_LOOK_MAX 12
+#define MENT_ARROW_DOWN 0x35
+#define MENT_ARROW_UP 0x36
+#define MENT_PICK_ICON 0x37
+#define MENT_PICK_BACK (MENT_PICK_ICON + MENT_LOOK_MAX)
+// Boxes 8+ of a page and their shadows (the first eight are the game's own members 0-15).
+#define MENT_CELL_EXTRA (MENT_PICK_BACK + 1)
+#define MENT_SHADOW_EXTRA (MENT_CELL_EXTRA + MENT_PAGE_MAX - 8)
+#define MENT_GROUP_SIZE (MENT_SHADOW_EXTRA + MENT_PAGE_MAX - 8)
+// Two players may only share Yoshi's box, as different colors.
+#define MENT_SHARED_BOX 3
+#define MENT_CELL(slot) ((slot) % MENT_PAGE_SIZE)
+#define MENT_CHAR(slot) MentSlotChar(slot)
+#define MENT_ROW_MAX ((MentSlotNum() - 1) / MENT_COLS)
+#define MENT_BANK_SET(group, slot, bank) (MentPageFocus(slot), HuSprBankSet((group), MentCellMember(MENT_CELL(slot)), (bank)))
+#define MENT_PICKER_IDLE (MentPicker < 0)
+#define MENT_BOX_FREE(slot) ((slot) == MENT_SHARED_BOX && MentLookNum[MENT_SHARED_BOX] > 0)
+
+extern s32 lbl_1_data_57C[MENT_SLOT_MAX / 4][4];
+
+static s32 MentPage;
+static s32 MentCols = 4;
+// The boxes' scale and the distance between columns.
+static float MentSX = 1.0f;
+static float MentSY = 1.0f;
+static float MentDX = 80.0f;
+static s32 MentSlotCount = 8;
+static s32 MentBoxMod[MENT_SLOT_MAX];
+static ANIMDATA *MentIcons[MENT_SLOT_MAX];
+// The looks of each box: index 0 is its own, i is mod character MentLooks[box][i - 1].
+static s32 MentLooks[MENT_SLOT_MAX][MENT_LOOK_MAX - 1];
+static s32 MentLookNum[MENT_SLOT_MAX];
+static ANIMDATA *MentLookIcons[MENT_SLOT_MAX][MENT_LOOK_MAX];
+// The look each player chose: -1 for the character's own, otherwise the mod character.
+static s32 MentLook[4] = { -1, -1, -1, -1 };
+static s32 MentPicker = -1;
+static s32 MentPickerIndex;
+static s32 MentBoxes[4];
+static s32 MentFaceGroup = -1;
+static s32 MentTeamGroup = -1;
+
+static s32 MentCellMember(s32 cell)
+{
+    return cell < 8 ? cell : MENT_CELL_EXTRA + cell - 8;
+}
+
+static s32 MentShadowMember(s32 cell)
+{
+    return cell < 8 ? cell + 8 : MENT_SHADOW_EXTRA + cell - 8;
+}
+
+// Sizes the boxes for the window: square on screen and smaller than the original ones, with as many columns
+// as fit on the panel (nine on a 16:9 screen), and writes their positions to lbl_1_data_57C.
+static void MentLayout(void)
+{
+    // The 576x480 screen fills the window, so a unit across is k times as wide on screen as a unit down.
+    float k = partyboard_screen_aspect() * 480.0f / 576.0f;
+    float dy = 60.0f;
+    s32 i;
+
+    MentSY = 46.0f / 64.0f;
+    MentSX = MentSY / k;
+    MentDX = dy / k;
+    MentCols = (s32)((356.0f - 64.0f * MentSX) / MentDX) + 1;
+    if (MentCols > MENT_PAGE_MAX / MENT_PAGE_ROWS) {
+        MentCols = MENT_PAGE_MAX / MENT_PAGE_ROWS;
+    }
+    if (MentCols < 4) {
+        MentCols = 4;
+    }
+    for (i = 0; i < MENT_SLOT_MAX / 4; i++) {
+        lbl_1_data_57C[i][0] = (s32)(288.0f + (i - (MentCols - 1) / 2.0f) * MentDX);
+        lbl_1_data_57C[i][1] = (s32)(83.0f + (i % MENT_PAGE_ROWS) * dy);
+    }
+}
+
+static s32 MentSlotNum(void)
+{
+    return MentSlotCount;
+}
+
+static s32 MentSlotChar(s32 slot)
+{
+    s32 base;
+
+    if (slot < 8) {
+        return slot;
+    }
+    base = partyboard_mods_character_base(MentBoxMod[slot]);
+    return base >= 0 ? base : 0;
+}
+
+static ANIMDATA *MentAnimReadOwn(s32 k, s32 fileNum, s32 baseNum)
+{
+    u32 size = 0;
+    const void *src = partyboard_mods_character_file(k, "data/ment.bin", fileNum & 0xFFFF, &size);
+    void *data;
+
+    if (src == NULL || size == 0) {
+        return HuSprAnimReadFile(baseNum);
+    }
+    data = HuMemDirectMalloc(HEAP_DATA, size);
+    memcpy(data, src, size);
+    return HuSprAnimRead(data);
+}
+
+static ANIMDATA *MentSolidMake(s32 w, s32 h, BOOL up, BOOL arrow, u16 fill)
+{
+    ANIMDATA *anim = HuSprAnimMake(w, h, ANIM_BMP_RGB5A3);
+    u8 *pix = HuMemDirectMalloc(HEAP_DATA, w * h * 2);
+    s32 x;
+    s32 y;
+
+    for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+            s32 row = up ? (h - 1 - y) : y;
+            float half = 15.5f - row;
+            float dx = x + 0.5f - 16.0f;
+            u16 color = fill;
+            s32 offset;
+
+            if (arrow) {
+                color = 0;
+                if (dx < 0) {
+                    dx = -dx;
+                }
+                if (dx < half) {
+                    // Yellow with a dark brown edge, opaque.
+                    if (dx < half - 2.5f && row < 13) {
+                        color = 0x8000 | (31 << 10) | (27 << 5) | 0;
+                    }
+                    else {
+                        color = 0x8000 | (8 << 10) | (4 << 5) | 0;
+                    }
+                }
+            }
+            offset = (((y / 4) * (w / 4) + (x / 4)) * 16 + (y % 4) * 4 + (x % 4)) * 2;
+            pix[offset] = color >> 8;
+            pix[offset + 1] = color & 0xFF;
+        }
+    }
+    anim->bmp->data = pix;
+    return anim;
+}
+
+static void MentAnimSwap(s32 group, s32 member, ANIMDATA *anim)
+{
+    HUSPRITE *sprite;
+    s32 bank;
+
+    if (group < 0 || HuSprGrpData[group].capacity <= member || HuSprGrpData[group].members[member] == HUSPR_NONE) {
+        return;
+    }
+    sprite = &HuSprData[HuSprGrpData[group].members[member]];
+    if (sprite->data == anim) {
+        return;
+    }
+    bank = sprite->bank;
+    HuSprAnimLock(anim);
+    HuSprAnimKill(sprite->data);
+    sprite->data = anim;
+    sprite->bank = 0;
+    HuSprBankSet(group, member, bank);
+}
+
+static void MentPageShow(s32 page)
+{
+    static const s32 cursorMembers[] = { 0x10, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x31 };
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 cell;
+    s32 slot;
+    s32 player;
+    s32 i;
+    BOOL shown;
+
+    MentPage = page;
+    for (cell = 0; cell < MENT_PAGE_SIZE; cell++) {
+        slot = page * MENT_PAGE_SIZE + cell;
+        if (slot >= MentSlotNum()) {
+            HuSprAttrSet(group, MentCellMember(cell), HUSPR_ATTR_DISPOFF);
+            HuSprAttrSet(group, MentShadowMember(cell), HUSPR_ATTR_DISPOFF);
+            continue;
+        }
+        MentAnimSwap(group, MentCellMember(cell), MentIcons[slot]);
+        HuSprBankSet(group, MentCellMember(cell), 0);
+        for (player = 0; player < 4; player++) {
+            if (lbl_1_bss_3114[player].unk_70[0] == 1 && lbl_1_bss_3114[player].unk_68 == slot) {
+                HuSprBankSet(group, MentCellMember(cell), 1);
+            }
+        }
+        HuSprAttrReset(group, MentCellMember(cell), HUSPR_ATTR_DISPOFF);
+        HuSprAttrReset(group, MentShadowMember(cell), HUSPR_ATTR_DISPOFF);
+    }
+    // Cursors on another page are shrunk away instead of hidden, so that the game's own hiding still holds.
+    for (player = 0; player < 4; player++) {
+        shown = lbl_1_bss_3114[player].unk_68 / MENT_PAGE_SIZE == page;
+        for (i = 0; i < (s32)(sizeof(cursorMembers) / sizeof(cursorMembers[0])); i++) {
+            HuSprScaleSet(group, cursorMembers[i] + player, shown ? MentSX : 0.0f, shown ? MentSY : 0.0f);
+        }
+    }
+    if ((page + 1) * MENT_PAGE_SIZE < MentSlotNum()) {
+        HuSprAttrReset(group, MENT_ARROW_DOWN, HUSPR_ATTR_DISPOFF);
+    }
+    else {
+        HuSprAttrSet(group, MENT_ARROW_DOWN, HUSPR_ATTR_DISPOFF);
+    }
+    if (page > 0) {
+        HuSprAttrReset(group, MENT_ARROW_UP, HUSPR_ATTR_DISPOFF);
+    }
+    else {
+        HuSprAttrSet(group, MENT_ARROW_UP, HUSPR_ATTR_DISPOFF);
+    }
+}
+
+static void MentPageFocus(s32 slot)
+{
+    if (MentPicker < 0 && slot / MENT_PAGE_SIZE != MentPage) {
+        MentPageShow(slot / MENT_PAGE_SIZE);
+    }
+}
+
+// Called once the select group exists: loads every box's and look's picture, the page arrows and the
+// look row.
+static void MentIconsCreate(s32 group)
+{
+    s32 count = partyboard_mods_character_count();
+    s32 slot;
+    s32 base;
+    s32 sprite;
+    s32 k;
+    s32 i;
+
+    MentFaceGroup = -1;
+    MentTeamGroup = -1;
+    MentPicker = -1;
+    MentSlotCount = 8;
+    for (slot = 0; slot < MENT_SLOT_MAX; slot++) {
+        MentLookNum[slot] = 0;
+    }
+    if (lbl_1_bss_A8[0] == 0) {
+        for (k = 0; k < count; k++) {
+            if (partyboard_mods_character_base(k) >= 0 && !partyboard_mods_character_costume(k) && MentSlotCount < MENT_SLOT_MAX) {
+                MentBoxMod[MentSlotCount++] = k;
+            }
+        }
+        // A costume goes in its owner's box when that mod character has one, otherwise in its base's.
+        for (k = 0; k < count; k++) {
+            base = partyboard_mods_character_base(k);
+            if (base < 0 || !partyboard_mods_character_costume(k)) {
+                continue;
+            }
+            slot = base;
+            for (i = 8; i < MentSlotCount; i++) {
+                if (MentBoxMod[i] == partyboard_mods_character_owner(k)) {
+                    slot = i;
+                }
+            }
+            if (MentLookNum[slot] < MENT_LOOK_MAX - 1) {
+                MentLooks[slot][MentLookNum[slot]++] = k;
+            }
+        }
+    }
+    for (slot = 0; slot < MentSlotNum(); slot++) {
+        if (slot < 8) {
+            MentIcons[slot] = HuSprData[HuSprGrpData[group].members[slot]].data;
+        }
+        else {
+            base = MentSlotChar(slot);
+            MentIcons[slot] = MentAnimReadOwn(MentBoxMod[slot], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
+        }
+        // Held for the whole screen, since the boxes swap between them.
+        HuSprAnimLock(MentIcons[slot]);
+    }
+    for (slot = 0; slot < MentSlotNum(); slot++) {
+        if (MentLookNum[slot] == 0) {
+            continue;
+        }
+        MentLookIcons[slot][0] = MentIcons[slot];
+        for (i = 0; i < MentLookNum[slot]; i++) {
+            base = partyboard_mods_character_base(MentLooks[slot][i]);
+            MentLookIcons[slot][i + 1]
+                = MentAnimReadOwn(MentLooks[slot][i], base + 0x1A, base + DATA_MAKE_NUM(DATADIR_MENT, 0x1A));
+            HuSprAnimLock(MentLookIcons[slot][i + 1]);
+        }
+    }
+    for (i = 0; i < MENT_PAGE_SIZE; i++) {
+        if (i >= 8) {
+            sprite = HuSprCreate(MentIcons[0], 0x3E8, 0);
+            HuSprGrpMemberSet(group, MentCellMember(i), sprite);
+            sprite = HuSprCreate(HuSprData[HuSprGrpData[group].members[8]].data, 0x3F2, 0);
+            HuSprGrpMemberSet(group, MentShadowMember(i), sprite);
+            HuSprTPLvlSet(group, MentShadowMember(i), 0.5f);
+        }
+        HuSprPosSet(group, MentCellMember(i), lbl_1_data_57C[MENT_COL(i)][0], lbl_1_data_57C[MENT_ROW(i)][1]);
+        HuSprScaleSet(group, MentCellMember(i), MentSX, MentSY);
+        HuSprPosSet(group, MentShadowMember(i), lbl_1_data_57C[MENT_COL(i)][0] + MentSX, lbl_1_data_57C[MENT_ROW(i)][1] + 2.0f * MentSY);
+        HuSprScaleSet(group, MentShadowMember(i), MentSX, MentSY);
+    }
+    // The panel grows downward to hold four rows: 224 tall from y 31 becomes 278.
+    HuSprScaleSet(group, 0x28, 1.0f, 278.0f / 224.0f);
+    fn_1_6534(group, 0x28, 288.0f, 31.0f + 209.0f * 278.0f / 224.0f);
+    // The gold frame's corners and their shadows stretch the same way, so the frame stays around the panel.
+    for (i = 0; i < 4; i++) {
+        HuSprScaleSet(group, i + 0x29, 1.0f, 278.0f / 224.0f);
+        fn_1_6534(group, i + 0x29, lbl_1_data_57C[i][2], 31.0f + (lbl_1_data_57C[i][3] - 31.0f) * 278.0f / 224.0f);
+        HuSprScaleSet(group, i + 0x2D, 1.0f, 278.0f / 224.0f);
+        fn_1_6534(group, i + 0x2D, lbl_1_data_57C[i][2] + 1, 31.0f + (lbl_1_data_57C[i][3] + 6 - 31.0f) * 278.0f / 224.0f);
+    }
+    sprite = HuSprCreate(MentSolidMake(32, 16, FALSE, TRUE, 0), 0x14, 0);
+    HuSprGrpMemberSet(group, MENT_ARROW_DOWN, sprite);
+    HuSprPosSet(group, MENT_ARROW_DOWN, 288.0f, 83.0f + 3 * 60.0f + 32.0f);
+    sprite = HuSprCreate(MentSolidMake(32, 16, TRUE, TRUE, 0), 0x14, 0);
+    HuSprGrpMemberSet(group, MENT_ARROW_UP, sprite);
+    HuSprPosSet(group, MENT_ARROW_UP, 288.0f, 42.0f);
+    for (i = 0; i < MENT_LOOK_MAX; i++) {
+        sprite = HuSprCreate(MentIcons[0], 0x1E0, 0);
+        HuSprGrpMemberSet(group, MENT_PICK_ICON + i, sprite);
+        HuSprAttrSet(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+    }
+    // A dark, see-through strip behind the look row.
+    sprite = HuSprCreate(MentSolidMake(8, 8, FALSE, FALSE, (3 << 12) | (1 << 8) | (1 << 4) | 2), 0x300, 0);
+    HuSprGrpMemberSet(group, MENT_PICK_BACK, sprite);
+    HuSprAttrSet(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
+    MentPage = 0;
+}
+
+static void MentLooksReset(void)
+{
+    s32 i;
+
+    for (i = 0; i < 4; i++) {
+        MentLook[i] = -1;
+    }
+}
+
+// Whether another chosen player already has this look of the box.
+static BOOL MentLookTaken(s32 player, s32 box, s32 index)
+{
+    s32 look = index == 0 ? -1 : MentLooks[box][index - 1];
+    s32 i;
+
+    for (i = 0; i < 4; i++) {
+        if (i != player && lbl_1_bss_3114[i].unk_70[0] == 1 && lbl_1_bss_3114[i].unk_68 == box && MentLook[i] == look) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+// The look row opens just below the box's row, or above it from the bottom row.
+static float MentPickerY(s32 box)
+{
+    s32 row = MENT_ROW(MENT_CELL(box));
+
+    return lbl_1_data_57C[row][1] + (row == MENT_PAGE_ROWS - 1 ? -60.0f : 60.0f);
+}
+
+static void MentPickerPlace(MentDllUnkBss3114Struct *player, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 box = player->unk_68;
+    s32 num = MentLookNum[box] + 1;
+    float y = MentPickerY(box);
+    float x = 288.0f + (MentPickerIndex - (num - 1) / 2.0f) * MentDX;
+
+    HuSprPosSet(group, player->unk_58 + cursor, x, y);
+    HuSprPosSet(group, player->unk_58 + cursor + 4, x, y);
+}
+
+static void MentPickerClose(MentDllUnkBss3114Struct *player, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 i;
+
+    for (i = 0; i <= MentLookNum[player->unk_68]; i++) {
+        HuSprAttrSet(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+    }
+    HuSprAttrSet(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
+    HuSprPosSet(group, player->unk_58 + cursor, lbl_1_data_57C[MENT_COL(player->unk_68)][0], lbl_1_data_57C[MENT_ROW(player->unk_68)][1]);
+    HuSprPosSet(group, player->unk_58 + cursor + 4, lbl_1_data_57C[MENT_COL(player->unk_68)][0], lbl_1_data_57C[MENT_ROW(player->unk_68)][1]);
+    MentPicker = -1;
+}
+
+// Runs before a cursor's own handling each frame. Choosing a box with looks opens the look row instead of
+// choosing it; while the row is open it takes the pad, and choosing a look lets the game choose the box this
+// frame. Returns TRUE when the game's handling should be skipped. cursor is the first member of the cursor's
+// sprites (0x10 for players, 0x18 for COMs).
+static BOOL MentPickerUpdate(MentDllUnkBss3114Struct *player, s32 pad, s32 cursor)
+{
+    s32 group = lbl_1_bss_35BC[0].unk_30;
+    s32 box = player->unk_68;
+    s32 num;
+    s32 i;
+    s32 dir = 0;
+    float y;
+
+    if (MentPicker != player->unk_58) {
+        if (player->unk_70[0] != 0 || !(HuPadBtnDown[pad] & PAD_BUTTON_A)) {
+            return FALSE;
+        }
+        if (MentLookNum[box] == 0) {
+            MentLook[player->unk_58] = -1;
+            return FALSE;
+        }
+        if (MentPicker >= 0) {
+            return TRUE;
+        }
+        num = MentLookNum[box] + 1;
+        for (MentPickerIndex = 0; MentPickerIndex < num && MentLookTaken(player->unk_58, box, MentPickerIndex); MentPickerIndex++) { }
+        if (MentPickerIndex == num) {
+            HuAudFXPlay(3);
+            return TRUE;
+        }
+        MentPicker = player->unk_58;
+        y = MentPickerY(box);
+        HuSprPosSet(group, MENT_PICK_BACK, 288.0f, y);
+        HuSprScaleSet(group, MENT_PICK_BACK, (num * MentDX + 8.0f) / 8.0f, (64.0f * MentSY + 10.0f) / 8.0f);
+        HuSprAttrReset(group, MENT_PICK_BACK, HUSPR_ATTR_DISPOFF);
+        for (i = 0; i < num; i++) {
+            MentAnimSwap(group, MENT_PICK_ICON + i, MentLookIcons[box][i]);
+            HuSprBankSet(group, MENT_PICK_ICON + i, 0);
+            HuSprPosSet(group, MENT_PICK_ICON + i, 288.0f + (i - (num - 1) / 2.0f) * MentDX, y);
+            HuSprScaleSet(group, MENT_PICK_ICON + i, MentSX, MentSY);
+            HuSprTPLvlSet(group, MENT_PICK_ICON + i, MentLookTaken(player->unk_58, box, i) ? 0.35f : 1.0f);
+            HuSprAttrReset(group, MENT_PICK_ICON + i, HUSPR_ATTR_DISPOFF);
+        }
+        MentPickerPlace(player, cursor);
+        HuAudFXPlay(2);
+        HuPadBtnDown[pad] &= ~PAD_BUTTON_A;
+        return TRUE;
+    }
+    num = MentLookNum[box] + 1;
+    if (HuPadBtnDown[pad] & PAD_BUTTON_B) {
+        HuPadBtnDown[pad] &= ~PAD_BUTTON_B;
+        MentPickerClose(player, cursor);
+        HuAudFXPlay(3);
+        return TRUE;
+    }
+    if (HuPadBtnDown[pad] & PAD_BUTTON_A) {
+        if (MentLookTaken(player->unk_58, box, MentPickerIndex)) {
+            HuAudFXPlay(3);
+            return TRUE;
+        }
+        MentLook[player->unk_58] = MentPickerIndex == 0 ? -1 : MentLooks[box][MentPickerIndex - 1];
+        MentPickerClose(player, cursor);
+        return FALSE;
+    }
+    if (HuPadStkX[pad] >= 5 || (HuPadBtn[pad] & PAD_BUTTON_RIGHT)) {
+        dir = 1;
+    }
+    else if (HuPadStkX[pad] <= -5 || (HuPadBtn[pad] & PAD_BUTTON_LEFT)) {
+        dir = -1;
+    }
+    if (dir != 0) {
+        MentPickerIndex = (MentPickerIndex + dir + num) % num;
+        MentPickerPlace(player, cursor);
+        HuAudFXPlay(0);
+        for (i = 0; i < 8; i++) {
+            fn_1_4D8();
+        }
+    }
+    return TRUE;
+}
+
+// The character each player plays: a box's own character, or the mod character of its look or box.
+static s32 MentWantedFor(s32 player)
+{
+    s32 box = lbl_1_bss_3114[player].unk_68;
+
+    if (MentLook[player] >= 0) {
+        return 8 + MentLook[player];
+    }
+    return box >= 8 ? 8 + MentBoxMod[box] : box;
+}
+
+// The small faces on the later party screens are read per spot, so they are read again whenever the
+// characters in the spots change.
+static void MentFacesRefresh(void)
+{
+    s32 spot;
+    ANIMDATA *face;
+    ANIMDATA *mark;
+
+    for (spot = 0; spot < 8; spot++) {
+        face = HuSprAnimReadFile(spot + DATA_MAKE_NUM(DATADIR_MENT, 0x31));
+        HuSprAnimLock(face);
+        MentAnimSwap(MentFaceGroup, spot, face);
+        MentAnimSwap(MentTeamGroup, spot + 7, face);
+        MentAnimSwap(MentTeamGroup, spot + 0x1F, face);
+        HuSprAnimKill(face);
+        if (MentTeamGroup >= 0) {
+            mark = HuSprAnimReadFile(spot + DATA_MAKE_NUM(DATADIR_MENT, 0x4E));
+            HuSprAnimLock(mark);
+            MentAnimSwap(MentTeamGroup, spot + 0x37, mark);
+            HuSprAnimKill(mark);
+        }
+    }
+}
+
+static void MentPlace(void)
+{
+    s32 wanted[4];
+    s32 spots[4];
+    s32 i;
+
+    if (partyboard_mods_character_count() == 0) {
+        return;
+    }
+    for (i = 0; i < 4; i++) {
+        MentBoxes[i] = lbl_1_bss_3114[i].unk_68;
+        wanted[i] = MentWantedFor(i);
+    }
+    partyboard_mods_place_characters(wanted, spots, 4);
+    for (i = 0; i < 4; i++) {
+        lbl_1_bss_3114[i].unk_68 = spots[i];
+    }
+    MentFacesRefresh();
+}
+
+static void MentUnplace(void)
+{
+    s32 i;
+
+    if (partyboard_mods_character_count() == 0) {
+        return;
+    }
+    for (i = 0; i < 4; i++) {
+        lbl_1_bss_3114[i].unk_68 = MentBoxes[i];
+    }
+    partyboard_mods_place_characters(NULL, NULL, 0);
+    MentFacesRefresh();
+    MentPageShow(0);
+}
+#else
+#define MENT_COLS 4
+#define MENT_COL(slot) ((slot) % 4)
+#define MENT_ROW(slot) ((slot) / 4)
+#define MENT_TAG_Y(y) (y)
+#define MENT_CELL(slot) (slot)
+#define MENT_CHAR(slot) (slot)
+#define MENT_ROW_MAX 1
+#define MENT_BANK_SET(group, slot, bank) HuSprBankSet((group), (slot), (bank))
+#define MENT_BOX_FREE(slot) 0
+#define MENT_PICKER_IDLE 1
+#endif
 
 void fn_1_658C(Process *arg0)
 {
@@ -1023,7 +1592,7 @@ s32 fn_1_8FB8(void)
                 var_r26 = 1;
             }
         }
-        if ((lbl_1_bss_3114[0].unk_70[0] == 0) && (HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B)) {
+        if ((lbl_1_bss_3114[0].unk_70[0] == 0) && (HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && MENT_PICKER_IDLE) {
             HuAudFXPlay(3);
             var_r30 = 0;
             break;
@@ -1119,9 +1688,9 @@ s32 fn_1_92CC(void)
             fn_1_4D8();
             if ((var_r24 != lbl_1_bss_3114[var_r30].unk_68) && (lbl_1_bss_3114[var_r30].unk_70[0] == 0)) {
                 var_r24 = lbl_1_bss_3114[var_r30].unk_68;
-                fn_1_1968(var_r27, lbl_1_bss_3114[var_r30].unk_68 + 0x1B0008, -1, -0x3E7);
+                fn_1_1968(var_r27, MENT_CHAR(lbl_1_bss_3114[var_r30].unk_68) + 0x1B0008, -1, -0x3E7);
             }
-            if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && (lbl_1_bss_3114[var_r30].unk_70[0] == 0)) {
+            if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) && (lbl_1_bss_3114[var_r30].unk_70[0] == 0) && MENT_PICKER_IDLE) {
                 HuAudFXPlay(3);
                 if (var_r26 == -1) {
                     var_r29 = 0;
@@ -1846,6 +2415,11 @@ void fn_1_B654(omObjData *arg0, MentDllUnkBss35BCStruct *arg1)
                     }
                 }
                 fn_1_98E4();
+#ifdef TARGET_PC
+                if (var_r30 == 1) {
+                    MentPlace();
+                }
+#endif
                 break;
             case 1:
                 var_r30 = 2;
@@ -1853,6 +2427,9 @@ void fn_1_B654(omObjData *arg0, MentDllUnkBss35BCStruct *arg1)
                 var_r29 = fn_1_99CC();
                 if (var_r29 != 3) {
                     fn_1_1850C();
+#ifdef TARGET_PC
+                    MentUnplace();
+#endif
                     var_r30 = 0;
                 }
                 else {
@@ -3763,12 +4340,25 @@ void fn_1_14BA8(void)
     HuSprGrpPosSet(var_r30, 0.0f, -500.0f);
 }
 
+#ifdef TARGET_PC
+// Rows past the first page repeat the y positions, since each page shows two rows.
+s32 lbl_1_data_57C[MENT_SLOT_MAX / 4][4] = {
+    { 0xA8, 0x5A, 0x78, 0x33 },
+    { 0xF8, 0xBE, 0x1CA, 0x33 },
+    { 0x148, 0x5A, 0x78, 0xDE },
+    { 0x198, 0xBE, 0x1CA, 0xDE },
+    { 0, 0x5A }, { 0, 0xBE }, { 0, 0x5A }, { 0, 0xBE },
+    { 0, 0x5A }, { 0, 0xBE }, { 0, 0x5A }, { 0, 0xBE },
+    { 0, 0x5A }, { 0, 0xBE }, { 0, 0x5A }, { 0, 0xBE },
+};
+#else
 s32 lbl_1_data_57C[4][4] = {
     { 0xA8, 0x5A, 0x78, 0x33 },
     { 0xF8, 0xBE, 0x1CA, 0x33 },
     { 0x148, 0x5A, 0x78, 0xDE },
     { 0x198, 0xBE, 0x1CA, 0xDE },
 };
+#endif
 s32 lbl_1_data_5BC[4][2] = {
     { 0x1B, 0x18 },
     { 0x49, 0x18 },
@@ -3823,10 +4413,10 @@ void fn_1_14CE0(void)
             HuSprAttrReset(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x10, HUSPR_ATTR_DISPOFF);
             HuSprAttrReset(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x14, HUSPR_ATTR_DISPOFF);
         }
-        HuSprPosSet(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x10, lbl_1_data_57C[lbl_1_bss_3114[var_r31].unk_68 % 4][0],
-            lbl_1_data_57C[lbl_1_bss_3114[var_r31].unk_68 / 4][1]);
-        HuSprPosSet(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x14, lbl_1_data_57C[lbl_1_bss_3114[var_r31].unk_68 % 4][0],
-            lbl_1_data_57C[lbl_1_bss_3114[var_r31].unk_68 / 4][1]);
+        HuSprPosSet(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x10, lbl_1_data_57C[MENT_COL(lbl_1_bss_3114[var_r31].unk_68)][0],
+            lbl_1_data_57C[MENT_ROW(lbl_1_bss_3114[var_r31].unk_68)][1]);
+        HuSprPosSet(var_r30, lbl_1_bss_3114[var_r31].unk_58 + 0x14, lbl_1_data_57C[MENT_COL(lbl_1_bss_3114[var_r31].unk_68)][0],
+            lbl_1_data_57C[MENT_ROW(lbl_1_bss_3114[var_r31].unk_68)][1]);
     }
     for (var_r31 = 0; var_r31 <= 60; var_r31++) {
         fn_1_4D8();
@@ -3870,17 +4460,24 @@ void fn_1_151B8(MentDllUnkBss35BCStruct *arg0, s32 arg1, s32 arg2, s32 arg3)
     ANIMDATA *var_r23;
     ANIMDATA *var_r22;
 
+#ifdef TARGET_PC
+    // The boxes show the original characters until the players are chosen.
+    partyboard_mods_place_characters(NULL, NULL, 0);
+    MentLayout();
+    var_r30 = HuSprGrpCreate(MENT_GROUP_SIZE);
+#else
     var_r30 = HuSprGrpCreate(0x35);
+#endif
     arg0->unk_30 = var_r30;
     var_r26 = HuSprAnimReadFile(DATA_MAKE_NUM(DATADIR_MENT, 0x22));
     for (var_r31 = 0; var_r31 < 8; var_r31++) {
         var_r29 = HuSprCreate(HuSprAnimReadFile(var_r31 + DATA_MAKE_NUM(DATADIR_MENT, 0x1A)), 0x3E8, 0);
         HuSprGrpMemberSet(var_r30, var_r31, var_r29);
-        HuSprPosSet(var_r30, var_r31, lbl_1_data_57C[var_r31 % 4][0], lbl_1_data_57C[var_r31 / 4][1]);
+        HuSprPosSet(var_r30, var_r31, lbl_1_data_57C[MENT_COL(var_r31)][0], lbl_1_data_57C[MENT_ROW(var_r31)][1]);
         var_r29 = HuSprCreate(var_r26, 0x3F2, 0);
         HuSprGrpMemberSet(var_r30, var_r31 + 8, var_r29);
         HuSprTPLvlSet(var_r30, var_r31 + 8, 0.5f);
-        HuSprPosSet(var_r30, var_r31 + 8, lbl_1_data_57C[var_r31 % 4][0] + 1, lbl_1_data_57C[var_r31 / 4][1] + 2);
+        HuSprPosSet(var_r30, var_r31 + 8, lbl_1_data_57C[MENT_COL(var_r31)][0] + 1, lbl_1_data_57C[MENT_ROW(var_r31)][1] + 2);
     }
     for (var_r31 = 0; var_r31 < 4; var_r31++) {
         var_r29 = HuSprCreate(HuSprAnimReadFile(var_r31 + DATA_MAKE_NUM(DATADIR_MENT, 0x23)), 0, 0);
@@ -3939,6 +4536,10 @@ void fn_1_151B8(MentDllUnkBss35BCStruct *arg0, s32 arg1, s32 arg2, s32 arg3)
         HuSprAttrReset(var_r27, var_r28 + 0x29, HUSPR_ATTR_DISPOFF);
         HuSprAttrReset(var_r27, var_r28 + 0x2D, HUSPR_ATTR_DISPOFF);
     }
+#ifdef TARGET_PC
+    MentIconsCreate(var_r27);
+    MentPageShow(0);
+#endif
     HuSprGrpPosSet(var_r27, 0.0f, -500.0f);
 }
 
@@ -3966,8 +4567,8 @@ void fn_1_15950(void)
         fn_1_4D8();
         for (var_r28 = 0; var_r28 < 4; var_r28++) {
             var_r30 = &lbl_1_bss_3114[var_r28];
-            var_f31 = fn_1_32C(lbl_1_data_57C[var_r30->unk_68 % 4][0], lbl_1_data_57C[var_r30->unk_58 % 4][0], var_r31, 10.0f);
-            var_f30 = fn_1_32C(lbl_1_data_57C[var_r30->unk_68 / 4][1], lbl_1_data_57C[var_r30->unk_58 / 4][1], var_r31, 10.0f);
+            var_f31 = fn_1_32C(lbl_1_data_57C[MENT_COL(var_r30->unk_68)][0], lbl_1_data_57C[MENT_COL(var_r30->unk_58)][0], var_r31, 10.0f);
+            var_f30 = fn_1_32C(lbl_1_data_57C[MENT_ROW(var_r30->unk_68)][1], lbl_1_data_57C[MENT_ROW(var_r30->unk_58)][1], var_r31, 10.0f);
             HuSprPosSet(var_r29, var_r30->unk_58 + 0x10, var_f31, var_f30);
             HuSprPosSet(var_r29, var_r30->unk_58 + 0x14, var_f31, var_f30);
         }
@@ -3976,6 +4577,10 @@ void fn_1_15950(void)
         lbl_1_bss_3114[var_r31].unk_68 = lbl_1_bss_3114[var_r31].unk_58;
         lbl_1_bss_3114[var_r31].unk_70[0] = 0;
     }
+#ifdef TARGET_PC
+    MentLooksReset();
+    MentPageShow(0);
+#endif
 }
 
 void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
@@ -3994,24 +4599,29 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     var_r25 = lbl_1_bss_35BC[0].unk_30;
     var_r27 = 0;
     var_r26 = 0;
-    var_r30 = arg1->unk_68 % 4;
+    var_r30 = arg1->unk_68 % MENT_COLS;
     var_r24 = var_r30;
-    var_r29 = arg1->unk_68 / 4;
+    var_r29 = arg1->unk_68 / MENT_COLS;
     var_r23 = var_r29;
+#ifdef TARGET_PC
+    if (MentPickerUpdate(arg1, arg1->unk_6C, 0x10)) {
+        return;
+    }
+#endif
     if (arg1->unk_70[0] == 0) {
         if ((HuPadBtnDown[arg1->unk_6C] & PAD_BUTTON_A) != 0) {
             arg1->unk_70[0] = 1;
-            HuSprBankSet(var_r25, arg1->unk_68, 1);
+            MENT_BANK_SET(var_r25, arg1->unk_68, 1);
             HuSprBankSet(var_r25, arg1->unk_58 + 0x10, 1);
             HuSprBankSet(var_r25, arg1->unk_58 + 0x14, 1);
-            HuAudFXPlay(arg1->unk_68 + 0x6D);
+            HuAudFXPlay(MENT_CHAR(arg1->unk_68) + 0x6D);
         }
         else {
             if ((HuPadStkX[arg1->unk_6C] >= 5) || ((HuPadBtn[arg1->unk_6C] & 2) != 0)) {
                 var_r30++;
                 var_r27 = 1;
-                if (var_r30 > 3) {
-                    var_r30 = 3;
+                if (var_r30 > MENT_COLS - 1) {
+                    var_r30 = MENT_COLS - 1;
                 }
             }
             else if ((HuPadStkX[arg1->unk_6C] <= -5) || ((HuPadBtn[arg1->unk_6C] & 1) != 0)) {
@@ -4024,8 +4634,8 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
             if ((HuPadStkY[arg1->unk_6C] <= -5) || ((HuPadBtn[arg1->unk_6C] & 4) != 0)) {
                 var_r29++;
                 var_r26 = 1;
-                if (var_r29 > 1) {
-                    var_r29 = 1;
+                if (var_r29 > MENT_ROW_MAX) {
+                    var_r29 = MENT_ROW_MAX;
                 }
             }
             else if ((HuPadStkY[arg1->unk_6C] >= 5) || ((HuPadBtn[arg1->unk_6C] & 8) != 0)) {
@@ -4039,34 +4649,34 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     }
     else if ((HuPadBtnDown[arg1->unk_6C] & PAD_BUTTON_B) != 0) {
         arg1->unk_70[0] = 0;
-        HuSprBankSet(var_r25, arg1->unk_68, 0);
+        MENT_BANK_SET(var_r25, arg1->unk_68, 0);
         HuSprBankSet(var_r25, arg1->unk_58 + 0x10, 0);
         HuSprBankSet(var_r25, arg1->unk_58 + 0x14, 0);
         HuAudFXPlay(3);
     }
-    if (arg1->unk_68 != (var_r30 + (var_r29 * 4))) {
+    if (arg1->unk_68 != (var_r30 + (var_r29 * MENT_COLS))) {
         do {
             for (var_r28 = 0; var_r28 < 4; var_r28++) {
                 if ((var_r28 != arg1->unk_58) && (lbl_1_bss_3114[var_r28].unk_60 == 0)
-                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68)) {
+                    && ((var_r30 + (var_r29 * MENT_COLS)) == lbl_1_bss_3114[var_r28].unk_68) && !MENT_BOX_FREE(var_r30 + (var_r29 * MENT_COLS))) {
                     if ((var_r27 == 0) || (var_r26 == 0)) {
-                        if (((var_r30 + var_r27) > 3) || ((var_r30 + var_r27) < 0)) {
+                        if (((var_r30 + var_r27) > MENT_COLS - 1) || ((var_r30 + var_r27) < 0)) {
                             var_r30 = var_r24;
                         }
                         else {
                             var_r30 += var_r27;
                         }
-                        if (((var_r29 + var_r26) > 1) || ((var_r29 + var_r26) < 0)) {
+                        if (((var_r29 + var_r26) > MENT_ROW_MAX) || ((var_r29 + var_r26) < 0)) {
                             var_r29 = var_r23;
                         }
                         else {
                             var_r29 += var_r26;
                         }
                     }
-                    else if (((var_r30 + var_r27) <= 3) && ((var_r30 + var_r27) >= 0)) {
+                    else if (((var_r30 + var_r27) <= MENT_COLS - 1) && ((var_r30 + var_r27) >= 0)) {
                         var_r30 += var_r27;
                     }
-                    else if (((var_r29 + var_r26) <= 1) && ((var_r29 + var_r26) >= 0)) {
+                    else if (((var_r29 + var_r26) <= MENT_ROW_MAX) && ((var_r29 + var_r26) >= 0)) {
                         var_r29 += var_r26;
                     }
                     else {
@@ -4077,8 +4687,18 @@ void fn_1_15CB4(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
                 }
             }
         } while (var_r28 != 4);
-        if (arg1->unk_68 != (var_r30 + (var_r29 * 4))) {
-            arg1->unk_68 = var_r30 + (var_r29 * 4);
+#ifdef TARGET_PC
+        // The last page can have empty boxes.
+        if ((var_r30 + (var_r29 * MENT_COLS)) >= MentSlotNum()) {
+            var_r30 = var_r24;
+            var_r29 = var_r23;
+        }
+#endif
+        if (arg1->unk_68 != (var_r30 + (var_r29 * MENT_COLS))) {
+            arg1->unk_68 = var_r30 + (var_r29 * MENT_COLS);
+#ifdef TARGET_PC
+            MentPageFocus(arg1->unk_68);
+#endif
             HuAudFXPlay(0);
             for (var_r28 = 0; var_r28 <= 0xA; var_r28++) {
                 fn_1_4D8();
@@ -4098,8 +4718,8 @@ void fn_1_162A0(MentDllUnkBss3114Struct *arg0)
     var_r30 = lbl_1_bss_35BC[0].unk_30;
     arg0->unk_64 = 0;
     HuSprBankSet(var_r30, arg0->unk_58 + 0x20, arg0->unk_64);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x20, lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 / 4][1] + 0x23);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x24, lbl_1_data_57C[arg0->unk_68 % 4][0] + 1, lbl_1_data_57C[arg0->unk_68 / 4][1] + 0x25);
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x20, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(0x23));
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x24, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0] + 1, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(0x25));
     HuSprAttrReset(var_r30, arg0->unk_58 + 0x20, HUSPR_ATTR_DISPOFF);
     HuSprAttrReset(var_r30, arg0->unk_58 + 0x24, HUSPR_ATTR_DISPOFF);
 }
@@ -4165,21 +4785,21 @@ s32 fn_1_1648C(MentDllUnkBss3114Struct *arg0)
             HuAudFXPlay(0);
             for (var_r30 = 0; var_r30 <= 5; var_r30++) {
                 fn_1_4D8();
-                var_f31 = fn_1_32C(lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 % 4][0] + (var_r28 * 10), var_r30, 5);
-                HuSprPosSet(var_r29, arg0->unk_58 + 32, var_f31, lbl_1_data_57C[arg0->unk_68 / 4][1] + 35);
-                HuSprPosSet(var_r29, arg0->unk_58 + 36, 1 + var_f31, lbl_1_data_57C[arg0->unk_68 / 4][1] + 37);
+                var_f31 = fn_1_32C(lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_COL(arg0->unk_68)][0] + (var_r28 * 10), var_r30, 5);
+                HuSprPosSet(var_r29, arg0->unk_58 + 32, var_f31, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(35));
+                HuSprPosSet(var_r29, arg0->unk_58 + 36, 1 + var_f31, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(37));
             }
             HuSprBankSet(var_r29, arg0->unk_58 + 32, arg0->unk_64);
             for (var_r30 = 0; var_r30 <= 5; var_r30++) {
                 fn_1_4D8();
-                var_f31 = fn_1_32C(lbl_1_data_57C[arg0->unk_68 % 4][0] + (var_r28 * 10), lbl_1_data_57C[arg0->unk_68 % 4][0], var_r30, 5);
-                HuSprPosSet(var_r29, arg0->unk_58 + 32, var_f31, lbl_1_data_57C[arg0->unk_68 / 4][1] + 35);
-                HuSprPosSet(var_r29, arg0->unk_58 + 36, 1 + var_f31, lbl_1_data_57C[arg0->unk_68 / 4][1] + 37);
+                var_f31 = fn_1_32C(lbl_1_data_57C[MENT_COL(arg0->unk_68)][0] + (var_r28 * 10), lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], var_r30, 5);
+                HuSprPosSet(var_r29, arg0->unk_58 + 32, var_f31, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(35));
+                HuSprPosSet(var_r29, arg0->unk_58 + 36, 1 + var_f31, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(37));
             }
         }
     }
     if (var_r27 == 1) {
-        HuSprPosSet(var_r29, arg0->unk_58 + 49, lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 / 4][1] + 35);
+        HuSprPosSet(var_r29, arg0->unk_58 + 49, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(35));
         HuSprBankSet(var_r29, arg0->unk_58 + 49, arg0->unk_64);
         HuSprAttrReset(var_r29, arg0->unk_58 + 49, HUSPR_ATTR_DISPOFF);
         HuSprAttrSet(var_r29, arg0->unk_58 + 32, HUSPR_ATTR_DISPOFF);
@@ -4206,24 +4826,29 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     var_r26 = 0;
     var_r25 = 0;
     sp8 = arg1->unk_64;
-    var_r23 = var_r30 = arg1->unk_68 % 4;
-    var_r29 = arg1->unk_68 / 4;
+    var_r23 = var_r30 = arg1->unk_68 % MENT_COLS;
+    var_r29 = arg1->unk_68 / MENT_COLS;
     var_r22 = var_r29;
+#ifdef TARGET_PC
+    if (MentPickerUpdate(arg1, lbl_1_bss_3114->unk_6C, 0x18)) {
+        return;
+    }
+#endif
     if (arg1->unk_70[0] == 0) {
         if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_A) != 0) {
             arg1->unk_70[0] = 1;
-            HuSprBankSet(var_r27, arg1->unk_68, 1);
+            MENT_BANK_SET(var_r27, arg1->unk_68, 1);
             HuSprBankSet(var_r27, arg1->unk_58 + 0x18, 1);
             HuSprBankSet(var_r27, arg1->unk_58 + 0x1C, 1);
-            HuAudFXPlay(arg1->unk_68 + 0x6D);
+            HuAudFXPlay(MENT_CHAR(arg1->unk_68) + 0x6D);
             fn_1_162A0(arg1);
         }
         else {
             if ((HuPadStkX[lbl_1_bss_3114->unk_6C] >= 5) || ((HuPadBtn[lbl_1_bss_3114->unk_6C] & 2) != 0)) {
                 var_r30++;
                 var_r26 = 1;
-                if (var_r30 > 3) {
-                    var_r30 = 3;
+                if (var_r30 > MENT_COLS - 1) {
+                    var_r30 = MENT_COLS - 1;
                 }
             }
             else if ((HuPadStkX[lbl_1_bss_3114->unk_6C] <= -5) || ((HuPadBtn[lbl_1_bss_3114->unk_6C] & 1) != 0)) {
@@ -4236,8 +4861,8 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
             if ((HuPadStkY[lbl_1_bss_3114->unk_6C] <= -5) || ((HuPadBtn[lbl_1_bss_3114->unk_6C] & 4) != 0)) {
                 var_r29++;
                 var_r25 = 1;
-                if (var_r29 > 1) {
-                    var_r29 = 1;
+                if (var_r29 > MENT_ROW_MAX) {
+                    var_r29 = MENT_ROW_MAX;
                 }
             }
             else if ((HuPadStkY[lbl_1_bss_3114->unk_6C] >= 5) || ((HuPadBtn[lbl_1_bss_3114->unk_6C] & 8) != 0)) {
@@ -4251,36 +4876,36 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
     }
     else if ((HuPadBtnDown[lbl_1_bss_3114->unk_6C] & PAD_BUTTON_B) != 0) {
         arg1->unk_70[0] = arg1->unk_70[2] = 0;
-        HuSprBankSet(var_r27, arg1->unk_68, 0);
+        MENT_BANK_SET(var_r27, arg1->unk_68, 0);
         HuSprBankSet(var_r27, arg1->unk_58 + 0x18, 0);
         HuSprBankSet(var_r27, arg1->unk_58 + 0x1C, 0);
         HuSprAttrSet(var_r27, arg1->unk_58 + 0x20, 4);
         HuSprAttrSet(var_r27, arg1->unk_58 + 0x24, 4);
         HuAudFXPlay(3);
     }
-    if (arg1->unk_68 != (var_r30 + (var_r29 * 4))) {
+    if (arg1->unk_68 != (var_r30 + (var_r29 * MENT_COLS))) {
         do {
             for (var_r28 = 0; var_r28 < 4; var_r28++) {
                 if ((var_r28 != arg1->unk_58) && (lbl_1_bss_3114[var_r28].unk_70[0] == 1)
-                    && ((var_r30 + (var_r29 * 4)) == lbl_1_bss_3114[var_r28].unk_68)) {
+                    && ((var_r30 + (var_r29 * MENT_COLS)) == lbl_1_bss_3114[var_r28].unk_68) && !MENT_BOX_FREE(var_r30 + (var_r29 * MENT_COLS))) {
                     if ((var_r26 == 0) || (var_r25 == 0)) {
-                        if (((var_r30 + var_r26) > 3) || ((var_r30 + var_r26) < 0)) {
+                        if (((var_r30 + var_r26) > MENT_COLS - 1) || ((var_r30 + var_r26) < 0)) {
                             var_r30 = var_r23;
                         }
                         else {
                             var_r30 += var_r26;
                         }
-                        if (((var_r29 + var_r25) > 1) || ((var_r29 + var_r25) < 0)) {
+                        if (((var_r29 + var_r25) > MENT_ROW_MAX) || ((var_r29 + var_r25) < 0)) {
                             var_r29 = var_r22;
                         }
                         else {
                             var_r29 += var_r25;
                         }
                     }
-                    else if (((var_r30 + var_r26) <= 3) && ((var_r30 + var_r26) >= 0)) {
+                    else if (((var_r30 + var_r26) <= MENT_COLS - 1) && ((var_r30 + var_r26) >= 0)) {
                         var_r30 += var_r26;
                     }
-                    else if (((var_r29 + var_r25) <= 1) && ((var_r29 + var_r25) >= 0)) {
+                    else if (((var_r29 + var_r25) <= MENT_ROW_MAX) && ((var_r29 + var_r25) >= 0)) {
                         var_r29 += var_r25;
                     }
                     else {
@@ -4291,8 +4916,18 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
                 }
             }
         } while (var_r28 != 4);
-        if (arg1->unk_68 != (var_r30 + (var_r29 * 4))) {
-            arg1->unk_68 = var_r30 + (var_r29 * 4);
+#ifdef TARGET_PC
+        // The last page can have empty boxes.
+        if ((var_r30 + (var_r29 * MENT_COLS)) >= MentSlotNum()) {
+            var_r30 = var_r23;
+            var_r29 = var_r22;
+        }
+#endif
+        if (arg1->unk_68 != (var_r30 + (var_r29 * MENT_COLS))) {
+            arg1->unk_68 = var_r30 + (var_r29 * MENT_COLS);
+#ifdef TARGET_PC
+            MentPageFocus(arg1->unk_68);
+#endif
             HuAudFXPlay(0);
             for (var_r28 = 0; var_r28 <= 0xA; var_r28++) {
                 fn_1_4D8();
@@ -4300,8 +4935,8 @@ void fn_1_16B68(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
                 var_f30 = fn_1_32C(lbl_1_data_57C[var_r22][1], lbl_1_data_57C[var_r29][1], var_r28, 10.0f);
                 HuSprPosSet(var_r27, arg1->unk_58 + 0x18, var_f31, var_f30);
                 HuSprPosSet(var_r27, arg1->unk_58 + 0x1C, var_f31, var_f30);
-                HuSprPosSet(var_r27, arg1->unk_58 + 0x20, var_f31, 35.0f + var_f30);
-                HuSprPosSet(var_r27, arg1->unk_58 + 0x24, 1.0f + var_f31, 37.0f + var_f30);
+                HuSprPosSet(var_r27, arg1->unk_58 + 0x20, var_f31, MENT_TAG_Y(35.0f) + var_f30);
+                HuSprPosSet(var_r27, arg1->unk_58 + 0x24, 1.0f + var_f31, MENT_TAG_Y(37.0f) + var_f30);
             }
         }
     }
@@ -4323,16 +4958,16 @@ void fn_1_173FC(MentDllUnkBss3114Struct *arg0)
         }
     } while (var_r29 != 4);
     arg0->unk_64 = 0;
-    HuSprBankSet(var_r30, arg0->unk_68, 0);
+    MENT_BANK_SET(var_r30, arg0->unk_68, 0);
     HuSprBankSet(var_r30, arg0->unk_58 + 0x18, 0);
     HuSprBankSet(var_r30, arg0->unk_58 + 0x1C, 0);
     HuSprBankSet(var_r30, arg0->unk_58 + 0x20, arg0->unk_64);
     HuSprBankSet(var_r30, arg0->unk_58 + 0x31, arg0->unk_64);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x18, lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 / 4][1]);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x1C, lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 / 4][1]);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x20, lbl_1_data_57C[arg0->unk_68 % 4][0], lbl_1_data_57C[arg0->unk_68 / 4][1] + 0x23);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x24, lbl_1_data_57C[arg0->unk_68 % 4][0] + 1, lbl_1_data_57C[arg0->unk_68 / 4][1] + 0x25);
-    HuSprPosSet(var_r30, arg0->unk_58 + 0x31, lbl_1_data_57C[arg0->unk_68 % 4][0] + 1, lbl_1_data_57C[arg0->unk_68 / 4][1] + 0x25);
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x18, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1]);
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x1C, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1]);
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x20, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0], lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(0x23));
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x24, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0] + 1, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(0x25));
+    HuSprPosSet(var_r30, arg0->unk_58 + 0x31, lbl_1_data_57C[MENT_COL(arg0->unk_68)][0] + 1, lbl_1_data_57C[MENT_ROW(arg0->unk_68)][1] + MENT_TAG_Y(0x25));
     arg0->unk_70[2] = 0;
     HuSprAttrReset(var_r30, arg0->unk_58 + 0x18, HUSPR_ATTR_DISPOFF);
     HuSprAttrReset(var_r30, arg0->unk_58 + 0x1C, HUSPR_ATTR_DISPOFF);
@@ -4346,7 +4981,7 @@ void fn_1_17914(MentDllUnkBss3114Struct *arg0)
     s32 var_r30;
 
     var_r30 = lbl_1_bss_35BC[0].unk_30;
-    HuSprBankSet(var_r30, arg0->unk_68, 0);
+    MENT_BANK_SET(var_r30, arg0->unk_68, 0);
     HuSprAttrSet(var_r30, arg0->unk_58 + 0x18, 4);
     HuSprAttrSet(var_r30, arg0->unk_58 + 0x1C, 4);
     HuSprAttrSet(var_r30, arg0->unk_58 + 0x20, 4);
@@ -4396,6 +5031,9 @@ void fn_1_17CC8(MentDllUnkBss35BCStruct *arg0, s32 arg1, s32 arg2, s32 arg3)
 
     var_r26 = HuSprGrpCreate(0x11);
     arg0->unk_34 = var_r26;
+#ifdef TARGET_PC
+    MentFaceGroup = var_r26;
+#endif
     for (var_r30 = 0; var_r30 < 8; var_r30++) {
         var_r27 = HuSprCreate(HuSprAnimReadFile(var_r30 + DATA_MAKE_NUM(DATADIR_MENT, 0x31)), 0x3E8, 0);
         HuSprGrpMemberSet(var_r26, var_r30, var_r27);
@@ -5162,6 +5800,9 @@ void fn_1_1BB2C(MentDllUnkBss35BCStruct *arg0, s32 arg1, s32 arg2, s32 arg3)
     };
     var_r29 = HuSprGrpCreate(0x5B);
     arg0->unk_3C = var_r29;
+#ifdef TARGET_PC
+    MentTeamGroup = var_r29;
+#endif
     var_r30 = HuSprCreate(HuSprAnimReadFile(DATA_MAKE_NUM(DATADIR_MENT, 0x3D)), 0x7C6, 0);
     HuSprGrpMemberSet(var_r29, 0, var_r30);
     HuSprPosSet(var_r29, 0, 288.0f, 54.0f);
@@ -5661,7 +6302,7 @@ void fn_1_1E404(omObjData *arg0, MentDllUnkBss3114Struct *arg1)
             HuSprBankSet(var_r28, arg1->unk_68 + 9, 1);
             HuSprBankSet(var_r28, 0x19, 1);
             HuSprBankSet(var_r28, 0x1A, 1);
-            HuAudFXPlay(arg1->unk_68 + 0x6D);
+            HuAudFXPlay(MENT_CHAR(arg1->unk_68) + 0x6D);
         }
         else {
             if ((HuPadStkX[arg1->unk_6C] >= 5) || ((HuPadBtn[arg1->unk_6C] & 2) != 0)) {

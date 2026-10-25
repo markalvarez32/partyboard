@@ -1046,10 +1046,14 @@ EXPORTS
     msmMusGetStatus
     msmMusPlay
     msmMusSetMasterVolume
+    msmSeGetEntryID
+    msmSeGetNumPlay
     msmSeSetListener
     msmSeSetParam
     msmSeStopAll
     msmSysGetOutputMode
+    msmSysGetSampSize
+    msmSysLoadGroup
     msmSysSetOutputMode
     mtxRot
     mtxRotCat
@@ -1100,6 +1104,13 @@ EXPORTS
     port_main
     GetRelIncludeData
     OSGetLanguage
+    partyboard_mods_character_base
+    partyboard_mods_character_costume
+    partyboard_mods_character_count
+    partyboard_mods_character_file
+    partyboard_mods_character_owner
+    partyboard_mods_place_characters
+    partyboard_screen_aspect
     partyboard_settings_skipBootSequence
     partyboard_settings_unlock_bowsers_gnarly_party
     partyboard_version_is_pal

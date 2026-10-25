@@ -88,6 +88,9 @@ struct UserSettings {
         // Graphics
         ConfigVar<int> internalResolutionScale;
         ConfigVar<int> shadowResolutionMultiplier;
+        ConfigVar<bool> enableTextureReplacements;
+        ConfigVar<bool> enableTextureDumps;
+        ConfigVar<std::string> characterVariants;
 
         // Audio
 

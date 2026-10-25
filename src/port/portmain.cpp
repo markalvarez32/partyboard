@@ -18,17 +18,26 @@
 #include <dolphin/pad.h>
 #include <dolphin/vi.h>
 #include <game/disp.h>
+#include <port/audio.h>
 #include <port/config.hpp>
 #include <port/dolassets.h>
 #include <port/main.h>
 #include <port/settings.h>
 #include <port/port_version.h>
+#include <port/mods.hpp>
+#include <port/texture_replacements.hpp>
 
 #include <aurora/dvd.h>
 #include <aurora/lib/logging.hpp>
 #include <game/card.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 extern "C" int game_main();
 
@@ -95,6 +104,51 @@ bool launchUILoop() {
     return PartyBoard_IsRunning;
 }
 
+// A copy of the log in the data folder, so that a crash can be looked into afterwards.
+static FILE* PartyBoard_LogFile = nullptr;
+
+#ifdef _WIN32
+static LONG WINAPI log_unhandled_exception(EXCEPTION_POINTERS* info)
+{
+    if (PartyBoard_LogFile != nullptr) {
+        void* address = info->ExceptionRecord->ExceptionAddress;
+        HMODULE module = nullptr;
+        char name[MAX_PATH] = "?";
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module);
+        if (module != nullptr) {
+            GetModuleFileNameA(module, name, sizeof(name));
+        }
+        fprintf(PartyBoard_LogFile, "[FATAL | crash] exception 0x%08lX at %s+0x%llX\n",
+                info->ExceptionRecord->ExceptionCode, name,
+                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module)));
+        fflush(PartyBoard_LogFile);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
+static void open_log_file(const std::filesystem::path& folder)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+#ifdef _WIN32
+    PartyBoard_LogFile = _wfopen((folder / "partyboard.log").c_str(), L"w");
+    SetUnhandledExceptionFilter(&log_unhandled_exception);
+#else
+    PartyBoard_LogFile = fopen((folder / "partyboard.log").c_str(), "w");
+#endif
+}
+
+// Game reports (OSReport, OSPanic) go to the log file too.
+extern "C" void partyboard_log_text(const char* text)
+{
+    if (PartyBoard_LogFile != nullptr && text != nullptr) {
+        fputs(text, PartyBoard_LogFile);
+        fflush(PartyBoard_LogFile);
+    }
+}
+
 void aurora_log_callback(AuroraLogLevel level, const char* module, const char *message, unsigned int len)
 {
     const char *levelStr = "??";
@@ -119,6 +173,10 @@ void aurora_log_callback(AuroraLogLevel level, const char* module, const char *m
             break;
     }
     fprintf(out, "[%s | %s] %s\n", levelStr, module, message);
+    if (PartyBoard_LogFile != nullptr) {
+        fprintf(PartyBoard_LogFile, "[%s | %s] %s\n", levelStr, module, message);
+        fflush(PartyBoard_LogFile);
+    }
     if (level == LOG_FATAL) {
         fflush(out);
         abort();
@@ -384,6 +442,7 @@ extern "C" int port_main(int argc, char* argv[]) {
     partyboard::config::FinishRegistration();
 
     PartyBoard_ConfigPath = calculate_config_path();
+    open_log_file(PartyBoard_ConfigPath);
 
     partyboard::config::LoadFromUserPreferences();
     EnsureInitialPipelineCache(PartyBoard_ConfigPath);
@@ -408,7 +467,7 @@ extern "C" int port_main(int argc, char* argv[]) {
         config.allowJoystickBackgroundEvents = partyboard::getSettings().game.allowBackgroundInput;
         config.pauseOnFocusLost = partyboard::getSettings().game.pauseOnFocusLost;
         // config.imGuiInitCallback = &aurora_imgui_init_callback;
-        config.allowTextureDumps = false;
+        config.allowTextureDumps = partyboard::getSettings().game.enableTextureDumps;
         auroraInfo = aurora_initialize(argc, argv, &config);
     }
 
@@ -426,6 +485,7 @@ extern "C" int port_main(int argc, char* argv[]) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
     }
     VISetFrameBufferScale(partyboard::getSettings().game.internalResolutionScale.getValue());
+    partyboard::texture_replacements::reload();
 
     // TODO PC
     // partyboard::audio::SetMasterVolume(partyboard::getSettings().audio.masterVolume / 100.0f);
@@ -512,6 +572,7 @@ extern "C" int port_main(int argc, char* argv[]) {
     if (!aurora_dvd_open(dvd_path.c_str())) {
         PartyBoardMainLog.error("Failed to open DVD image: {}", dvd_path);
     }
+    partyboard::mods::initialize();
 
     PartyBoard_IsGameLaunched = true;
 
@@ -535,6 +596,8 @@ extern "C" int port_main(int argc, char* argv[]) {
 
     game_main();
 
+    partyboard_audio_shutdown();
+
     // partyboard::MoviePlayerShutdown();
 
     fflush(stdout);
@@ -547,6 +610,8 @@ extern "C" int port_main(int argc, char* argv[]) {
     partyboard::discord::shutdown();
 #endif
     partyboard::ui::shutdown();
+    partyboard::mods::shutdown();
+    partyboard::texture_replacements::shutdown();
     aurora_shutdown();
 
     return 0;

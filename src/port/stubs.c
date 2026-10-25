@@ -4,20 +4,24 @@
 #include <types.h>
 
 #include <game/dvd.h>
-#include <game/msm.h>
 #include <game/object.h>
 
 // Credits: Super Monkey Ball
 
 static VIRetraceCallback sVIRetraceCallback = NULL;
 
+void partyboard_log_text(const char *text);
+
 void OSReport(const char *msg, ...)
 {
+    char buffer[1024];
     va_list args;
     va_start(args, msg);
-    vprintf(msg, args);
-    fflush(stdout);
+    vsnprintf(buffer, sizeof(buffer), msg, args);
     va_end(args);
+    fputs(buffer, stdout);
+    fflush(stdout);
+    partyboard_log_text(buffer);
 }
 
 u32 OSGetConsoleType()
@@ -423,65 +427,6 @@ void GXResetWriteGatherPipe(void)
 
 // Hudson
 void HuDvdErrDispInit(GXRenderModeObj *rmode, void *xfb1, void *xfb2) { }
-
-void msmSysRegularProc(void)
-{
-}
-
-void msmMusFdoutEnd(void)
-{
-}
-
-int msmMusPlay(int musId, MSM_MUSPARAM *musParam)
-{
-    // TODO
-    return 0;
-}
-
-s32 msmMusGetStatus(int musNo)
-{
-    // TODO
-    return 0;
-}
-
-s32 msmStreamGetStatus(int streamNo)
-{
-    // TODO
-    return 0;
-}
-
-s32 msmSeSetParam(int seNo, MSM_SEPARAM* param)
-{
-    return 0;
-}
-
-s32 msmMusSetParam(s32 arg0, MSM_MUSPARAM* arg1)
-{
-    return 0;
-}
-
-void msmMusSetMasterVolume(s32 vol)
-{
-}
-
-s32 msmSysGetOutputMode(void)
-{
-    return 0;
-}
-
-s32 msmSeSetListener(Vec* pos, Vec* heading, float sndDist, float sndSpeed, MSM_SELISTENER* listener)
-{
-    return 0;
-}
-
-void msmSeStopAll(BOOL checkGrp, s32 speed)
-{
-}
-
-BOOL msmSysSetOutputMode(SND_OUTPUTMODE mode)
-{
-    return TRUE;
-}
 
 void OSSetSoundMode(u32 mode)
 {
