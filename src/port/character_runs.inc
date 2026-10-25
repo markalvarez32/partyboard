@@ -17,6 +17,7 @@
     {"data/m407.bin", 0x0D, 1}, // REL/m407dll/player
     {"data/m408.bin", 0x02, 1}, // REL/m408Dll
     {"data/m410.bin", 0x00, 1}, // REL/m410Dll/game, REL/m410Dll/player
+    {"data/m411.bin", 0x01, 1}, // REL/m411Dll
     {"data/m421.bin", 0x1E, 1}, // REL/m421Dll/player
     {"data/m423.bin", 0x04, 1}, // REL/m423Dll
     {"data/mgconst.bin", 0x0C, 1}, // REL/m423Dll
@@ -29,6 +30,7 @@
     {"data/m444.bin", 0x24, 1}, // REL/m444dll
     {"data/m459.bin", 0x06, 1}, // REL/m459dll
     {"data/m459.bin", 0x32, 1}, // REL/m459dll
+    {"data/result.bin", 0x22, 3}, // REL/resultDll
     {"data/selmenu.bin", 0x00, 2}, // REL/selmenuDll
     {"data/selmenu.bin", 0x01, 2}, // REL/selmenuDll
     {"data/w02.bin", 0x2E, 1}, // REL/w02Dll/shuffleboard

@@ -35,6 +35,10 @@ FMT_CI_RGB565, FMT_CI_RGB5A3 = 9, 10
 DEFAULT_FROM = (70.0, 170.0)
 
 
+def luma(r, g, b):
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
 class Recolor:
     def __init__(self, hue_from, hue_to, value_scale=1.0, sat_scale=1.0):
         self.lo, self.hi = hue_from
@@ -53,7 +57,16 @@ class Recolor:
         # Keep the shading variation inside the range by shifting relative to its center.
         nh = ((self.to + (hd - self.center)) % 360) / 360
         s = min(1.0, s * self.sat_scale)
-        v = min(1.0, v * self.value_scale)
+        # Keep the brightness the eye sees: a green and a blue of the same value differ a lot in lightness,
+        # so set the value from the original's lightness (scaled), giving up saturation when that is not enough.
+        target = min(1.0, luma(r / 255, g / 255, b / 255) * self.value_scale)
+        full = luma(*colorsys.hsv_to_rgb(nh, s, 1.0))
+        if full >= target:
+            v = target / full if full > 0 else 0.0
+        else:
+            v = 1.0
+            pure = luma(*colorsys.hsv_to_rgb(nh, 1.0, 1.0))
+            s = min(s, (1.0 - target) / (1.0 - pure)) if pure < 1.0 else 0.0
         nr, ng, nb = colorsys.hsv_to_rgb(nh, s, v)
         return round(nr * 255), round(ng * 255), round(nb * 255)
 
